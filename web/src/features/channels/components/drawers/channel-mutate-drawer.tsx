@@ -293,6 +293,10 @@ const SENSITIVE_FORM_FIELDS = [
   'disable_store',
   'allow_safety_identifier',
   'allow_include_obfuscation',
+  'codex_response_guard_enabled',
+  'codex_response_guard_status_codes',
+  'codex_response_guard_error_messages',
+  'codex_response_guard_retry_times',
   'allow_inference_geo',
   'allow_speed',
   'claude_beta_query',
@@ -758,6 +762,9 @@ export function ChannelMutateDrawer({
   const currentDisableStore = form.watch('disable_store')
   const currentAllowSafetyIdentifier = form.watch('allow_safety_identifier')
   const currentAllowIncludeObfuscation = form.watch('allow_include_obfuscation')
+  const currentCodexResponseGuardEnabled = form.watch(
+    'codex_response_guard_enabled'
+  )
   const currentAllowInferenceGeo = form.watch('allow_inference_geo')
   const currentAllowSpeed = form.watch('allow_speed')
   const currentClaudeBetaQuery = form.watch('claude_beta_query')
@@ -4496,6 +4503,127 @@ export function ChannelMutateDrawer({
                                         </FormItem>
                                       )}
                                     />
+
+                                    <FormField
+                                      control={form.control}
+                                      name='codex_response_guard_enabled'
+                                      render={({ field }) => (
+                                        <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                          <div className='space-y-0.5'>
+                                            <FormLabel className='text-sm'>
+                                              {t('Codex response guard')}
+                                            </FormLabel>
+                                            <FormDescription>
+                                              {t(
+                                                'Retry Responses matching built-in reasoning anomalies or configured upstream errors'
+                                              )}
+                                            </FormDescription>
+                                          </div>
+                                          <FormControl>
+                                            <Switch
+                                              checked={field.value}
+                                              onCheckedChange={field.onChange}
+                                            />
+                                          </FormControl>
+                                        </FormItem>
+                                      )}
+                                    />
+
+                                    {currentCodexResponseGuardEnabled && (
+                                      <div className='grid gap-4 px-4 pb-3 lg:grid-cols-2'>
+                                        <FormField
+                                          control={form.control}
+                                          name='codex_response_guard_status_codes'
+                                          render={({ field }) => (
+                                            <FormItem>
+                                              <FormLabel>
+                                                {t(
+                                                  'Codex response guard status codes'
+                                                )}
+                                              </FormLabel>
+                                              <FormControl>
+                                                <Input
+                                                  placeholder='429,500-503'
+                                                  value={field.value ?? ''}
+                                                  onChange={field.onChange}
+                                                />
+                                              </FormControl>
+                                              <FormDescription>
+                                                {t(
+                                                  'Optional 400-599 status codes or ranges'
+                                                )}
+                                              </FormDescription>
+                                              <FormMessage />
+                                            </FormItem>
+                                          )}
+                                        />
+
+                                        <FormField
+                                          control={form.control}
+                                          name='codex_response_guard_retry_times'
+                                          render={({ field }) => (
+                                            <FormItem>
+                                              <FormLabel>
+                                                {t(
+                                                  'Codex response guard retry times'
+                                                )}
+                                              </FormLabel>
+                                              <FormControl>
+                                                <Input
+                                                  type='number'
+                                                  min={1}
+                                                  max={20}
+                                                  step={1}
+                                                  value={field.value ?? 5}
+                                                  onChange={(event) => {
+                                                    const value =
+                                                      event.target.value
+                                                    field.onChange(
+                                                      value === ''
+                                                        ? undefined
+                                                        : Number(value)
+                                                    )
+                                                  }}
+                                                />
+                                              </FormControl>
+                                              <FormDescription>
+                                                {t(
+                                                  'Maximum retries for one guarded request (1-20)'
+                                                )}
+                                              </FormDescription>
+                                              <FormMessage />
+                                            </FormItem>
+                                          )}
+                                        />
+
+                                        <FormField
+                                          control={form.control}
+                                          name='codex_response_guard_error_messages'
+                                          render={({ field }) => (
+                                            <FormItem className='lg:col-span-2'>
+                                              <FormLabel>
+                                                {t(
+                                                  'Codex response guard error messages'
+                                                )}
+                                              </FormLabel>
+                                              <FormControl>
+                                                <Textarea
+                                                  rows={3}
+                                                  value={field.value ?? ''}
+                                                  onChange={field.onChange}
+                                                />
+                                              </FormControl>
+                                              <FormDescription>
+                                                {t(
+                                                  'Optional complete error messages, one per line'
+                                                )}
+                                              </FormDescription>
+                                              <FormMessage />
+                                            </FormItem>
+                                          )}
+                                        />
+                                      </div>
+                                    )}
 
                                     <FormField
                                       control={form.control}

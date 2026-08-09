@@ -25,6 +25,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	hosttypes "github.com/QuantumNous/new-api/types"
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/samber/lo"
@@ -153,21 +154,31 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	relayInfo.SetEstimatePromptTokens(tokens)
 
-	priceData, err := helper.ModelPriceHelper(c, relayInfo, tokens, meta)
-	if err != nil {
-		newAPIError = types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
+	retryParam := &service.RetryParam{
+		Ctx:         c,
+		TokenGroup:  relayInfo.TokenGroup,
+		ModelName:   relayInfo.OriginModelName,
+		RequestPath: c.Request.URL.Path,
+		Retry:       common.GetPointer(0),
+	}
+	relayInfo.RetryIndex = 0
+	relayInfo.LastError = nil
+
+	// Select once before pre-consume so the selected channel's model mapping
+	// determines the initial billing expression. Attempt zero reuses it below.
+	channel, channelErr := getChannel(c, relayInfo, retryParam)
+	if channelErr != nil {
+		newAPIError = channelErr
 		return
 	}
-
-	// common.SetContextKey(c, constant.ContextKeyTokenCountMeta, meta)
-
+	priceData, newAPIError := refreshChannelPrice(c, relayInfo, tokens, meta)
+	if newAPIError != nil {
+		return
+	}
 	if priceData.FreeModel {
 		logger.LogInfo(c, fmt.Sprintf("模型 %s 免费，跳过预扣费", relayInfo.OriginModelName))
-	} else {
-		newAPIError = service.PreConsumeBilling(c, priceData.QuotaToPreConsume, relayInfo)
-		if newAPIError != nil {
-			return
-		}
+	} else if newAPIError = ensureChannelPreConsume(c, relayInfo, priceData.QuotaToPreConsume); newAPIError != nil {
+		return
 	}
 
 	defer func() {
@@ -181,24 +192,26 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
-	retryParam := &service.RetryParam{
-		Ctx:         c,
-		TokenGroup:  relayInfo.TokenGroup,
-		ModelName:   relayInfo.OriginModelName,
-		RequestPath: c.Request.URL.Path,
-		Retry:       common.GetPointer(0),
-	}
-	relayInfo.RetryIndex = 0
-	relayInfo.LastError = nil
-
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
-		channel, channelErr := getChannel(c, relayInfo, retryParam)
-		if channelErr != nil {
-			logger.LogError(c, channelErr.Error())
-			newAPIError = channelErr
-			break
+		if retryParam.GetRetry() > 0 {
+			channel, channelErr = getChannel(c, relayInfo, retryParam)
+			if channelErr != nil {
+				logger.LogError(c, channelErr.Error())
+				newAPIError = channelErr
+				break
+			}
+			priceData, newAPIError = refreshChannelPrice(c, relayInfo, tokens, meta)
+			if newAPIError != nil {
+				break
+			}
+			if priceData.FreeModel {
+				logger.LogInfo(c, fmt.Sprintf("模型 %s 免费，跳过预扣费", relayInfo.OriginModelName))
+			} else if newAPIError = ensureChannelPreConsume(c, relayInfo, priceData.QuotaToPreConsume); newAPIError != nil {
+				break
+			}
 		}
+
 		addUsedChannel(c, channel.Id)
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
 			newAPIError = billingErr
@@ -230,6 +243,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		if newAPIError == nil {
 			relayInfo.LastError = nil
+			if retryParam.GetRetry() > 0 {
+				logger.LogInfo(c, fmt.Sprintf(
+					"relay_retry_succeeded final_channel_id=%d attempts=%d used_channels=%s",
+					channel.Id,
+					retryParam.GetRetry()+1,
+					strings.Join(c.GetStringSlice("use_channel"), "->"),
+				))
+			}
 			return
 		}
 
@@ -238,9 +259,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
-		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry(), retryParam.GetRetry()) {
 			break
 		}
+		logger.LogInfo(c, fmt.Sprintf(
+			"relay_retry_scheduled channel_id=%d status_code=%d error_code=%s next_attempt=%d used_channels=%s",
+			channel.Id,
+			newAPIError.StatusCode,
+			newAPIError.GetErrorCode(),
+			retryParam.GetRetry()+2,
+			strings.Join(c.GetStringSlice("use_channel"), "->"),
+		))
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -253,6 +282,33 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			perfmetrics.RecordRelaySample(relayInfo, false, 0)
 		})
 	}
+}
+
+// refreshChannelPrice re-resolves the billing model mapping for the currently
+// selected channel and recomputes the price snapshot. It must be called after
+// every getChannel so tiered billing reflects the channel's model_mapping.
+func refreshChannelPrice(c *gin.Context, relayInfo *relaycommon.RelayInfo, tokens int, meta *types.TokenCountMeta) (hosttypes.PriceData, *types.NewAPIError) {
+	if err := helper.PrepareBillingModelName(c, relayInfo); err != nil {
+		return hosttypes.PriceData{}, types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
+	}
+	priceData, err := helper.ModelPriceHelper(c, relayInfo, tokens, meta)
+	if err != nil {
+		return hosttypes.PriceData{}, types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
+	}
+	return priceData, nil
+}
+
+// ensureChannelPreConsume tops up (or creates) the billing session to the
+// per-channel target quota. The initial call creates the session via
+// PreConsumeBilling; subsequent retries lift the reservation via Reserve.
+func ensureChannelPreConsume(c *gin.Context, relayInfo *relaycommon.RelayInfo, targetQuota int) *types.NewAPIError {
+	if relayInfo.Billing == nil {
+		return service.PreConsumeBilling(c, targetQuota, relayInfo)
+	}
+	if err := relayInfo.Billing.Reserve(targetQuota); err != nil {
+		return types.NewError(err, types.ErrorCodePreConsumeTokenQuotaFailed, types.ErrOptionWithStatusCode(http.StatusForbidden), types.ErrOptionWithSkipRetry())
+	}
+	return nil
 }
 
 var upgrader = websocket.Upgrader{
@@ -328,7 +384,7 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	return channel, nil
 }
 
-func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
+func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int, completedRetries int) bool {
 	if openaiErr == nil {
 		return false
 	}
@@ -342,6 +398,9 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 		return false
 	}
 	if retryTimes <= 0 {
+		return false
+	}
+	if retryLimit := openaiErr.GetRetryLimit(); retryLimit > 0 && completedRetries >= retryLimit {
 		return false
 	}
 	if _, ok := c.Get("specific_channel_id"); ok {

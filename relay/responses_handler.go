@@ -132,6 +132,18 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 
 		if httpResp.StatusCode != http.StatusOK {
 			newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
+			if helper.CodexResponseGuardEnabled(info) {
+				match, matchErr := helper.MatchCodexResponseGuard(info.ChannelOtherSettings, httpResp.StatusCode, newAPIError.Error(), nil)
+				if matchErr != nil {
+					logger.LogError(c, "invalid codex response guard configuration: "+matchErr.Error())
+				} else if match != nil {
+					if service.ShouldDisableChannel(newAPIError) {
+						helper.LogCodexResponseGuardConflict(c, info, match, httpResp.StatusCode)
+					} else {
+						return helper.NewCodexResponseGuardError(c, info, match, httpResp.StatusCode, false)
+					}
+				}
+			}
 			// reset status code 重置状态码
 			service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 			return newAPIError

@@ -1,11 +1,11 @@
 package helper
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
+	commonjson "github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -13,67 +13,105 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func ModelMappedHelper(c *gin.Context, info *common.RelayInfo, request dto.Request) error {
-	if info.ChannelMeta == nil {
-		info.ChannelMeta = &common.ChannelMeta{}
-	}
+type ChannelModelMappingResult struct {
+	OriginModelName   string
+	UpstreamModelName string
+	IsModelMapped     bool
+}
 
-	isResponsesCompact := info.RelayMode == relayconstant.RelayModeResponsesCompact
-	originModelName := info.OriginModelName
+func ResolveChannelModelMapping(relayMode int, originModelName, modelMapping string) (ChannelModelMappingResult, error) {
+	isResponsesCompact := relayMode == relayconstant.RelayModeResponsesCompact
 	mappingModelName := originModelName
 	if isResponsesCompact && strings.HasSuffix(originModelName, ratio_setting.CompactModelSuffix) {
 		mappingModelName = strings.TrimSuffix(originModelName, ratio_setting.CompactModelSuffix)
 	}
 
-	// map model name
-	modelMapping := c.GetString("model_mapping")
+	result := ChannelModelMappingResult{
+		OriginModelName:   originModelName,
+		UpstreamModelName: mappingModelName,
+	}
 	if modelMapping != "" && modelMapping != "{}" {
 		modelMap := make(map[string]string)
-		err := json.Unmarshal([]byte(modelMapping), &modelMap)
-		if err != nil {
-			return fmt.Errorf("unmarshal_model_mapping_failed")
+		if err := commonjson.Unmarshal([]byte(modelMapping), &modelMap); err != nil {
+			return ChannelModelMappingResult{}, fmt.Errorf("unmarshal_model_mapping_failed")
 		}
 
-		// 支持链式模型重定向，最终使用链尾的模型
+		// Preserve channel mapping semantics, including chained mappings and the
+		// legacy self-reference behavior used by existing channel configurations.
 		currentModel := mappingModelName
 		visitedModels := map[string]bool{
 			currentModel: true,
 		}
 		for {
-			if mappedModel, exists := modelMap[currentModel]; exists && mappedModel != "" {
-				// 模型重定向循环检测，避免无限循环
-				if visitedModels[mappedModel] {
-					if mappedModel == currentModel {
-						if currentModel == info.OriginModelName {
-							info.IsModelMapped = false
-							return nil
-						} else {
-							info.IsModelMapped = true
-							break
-						}
-					}
-					return errors.New("model_mapping_contains_cycle")
-				}
-				visitedModels[mappedModel] = true
-				currentModel = mappedModel
-				info.IsModelMapped = true
-			} else {
+			mappedModel, exists := modelMap[currentModel]
+			if !exists || mappedModel == "" {
 				break
 			}
+			if visitedModels[mappedModel] {
+				if mappedModel == currentModel {
+					if currentModel == originModelName {
+						return result, nil
+					}
+					result.IsModelMapped = true
+					break
+				}
+				return ChannelModelMappingResult{}, errors.New("model_mapping_contains_cycle")
+			}
+			visitedModels[mappedModel] = true
+			currentModel = mappedModel
+			result.IsModelMapped = true
 		}
-		if info.IsModelMapped {
-			info.UpstreamModelName = currentModel
+		if result.IsModelMapped {
+			result.UpstreamModelName = currentModel
 		}
 	}
 
 	if isResponsesCompact {
-		finalUpstreamModelName := mappingModelName
-		if info.IsModelMapped && info.UpstreamModelName != "" {
-			finalUpstreamModelName = info.UpstreamModelName
-		}
-		info.UpstreamModelName = finalUpstreamModelName
-		info.OriginModelName = ratio_setting.WithCompactModelSuffix(finalUpstreamModelName)
+		result.OriginModelName = ratio_setting.WithCompactModelSuffix(result.UpstreamModelName)
 	}
+	return result, nil
+}
+
+func PrepareBillingModelName(c *gin.Context, info *common.RelayInfo) error {
+	if info == nil {
+		return errors.New("relay_info_is_nil")
+	}
+
+	info.BillingModelName = info.OriginModelName
+	if c == nil {
+		return nil
+	}
+
+	resolved, err := ResolveChannelModelMapping(info.RelayMode, info.OriginModelName, c.GetString("model_mapping"))
+	if err != nil {
+		return err
+	}
+	if !resolved.IsModelMapped || !hasTieredBillingExpr(resolved.UpstreamModelName) {
+		return nil
+	}
+
+	info.BillingModelName = resolved.UpstreamModelName
+	return nil
+}
+
+func ModelMappedHelper(c *gin.Context, info *common.RelayInfo, request dto.Request) error {
+	if info.ChannelMeta == nil {
+		info.ChannelMeta = &common.ChannelMeta{}
+	}
+
+	modelMapping := ""
+	if c != nil {
+		modelMapping = c.GetString("model_mapping")
+	}
+	resolved, err := ResolveChannelModelMapping(info.RelayMode, info.OriginModelName, modelMapping)
+	if err != nil {
+		return err
+	}
+	info.IsModelMapped = resolved.IsModelMapped
+	if resolved.IsModelMapped || info.RelayMode == relayconstant.RelayModeResponsesCompact {
+		info.UpstreamModelName = resolved.UpstreamModelName
+	}
+	info.OriginModelName = resolved.OriginModelName
 	if request != nil {
 		request.SetModelName(info.UpstreamModelName)
 	}

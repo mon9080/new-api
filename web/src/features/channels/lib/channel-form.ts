@@ -18,6 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
 
+import { parseHttpStatusCodeRules } from '@/lib/http-status-code-rules'
+
 import {
   CHANNEL_TYPE_NEW_API,
   CHANNEL_STATUS,
@@ -73,6 +75,17 @@ function isOptionalProxyURL(value: string | undefined): boolean {
 export const HTTP_PROTOCOL_AUTO = 'auto'
 export const HTTP_PROTOCOL_HTTP1 = 'http1'
 export const MAX_HTTP2_CONNECTION_SHARDS = 8
+export const CODEX_RESPONSE_GUARD_DEFAULT_ERROR_MESSAGE =
+  'Selected model is at capacity. Please try a different model.'
+export const CODEX_RESPONSE_GUARD_DEFAULT_RETRY_TIMES = 5
+export const CODEX_RESPONSE_GUARD_MAX_RETRY_TIMES = 20
+
+function isOptionalCodexResponseGuardStatusCodes(
+  value: string | undefined
+): boolean {
+  const parsed = parseHttpStatusCodeRules(value)
+  return parsed.ok && parsed.ranges.every((range) => range.start >= 400)
+}
 
 export function normalizeHttpProtocol(
   value: string | undefined | null
@@ -271,6 +284,21 @@ export const channelFormSchema = z
     disable_store: z.boolean().optional(), // OpenAI only
     allow_safety_identifier: z.boolean().optional(), // OpenAI only
     allow_include_obfuscation: z.boolean().optional(), // OpenAI: include usage obfuscation
+    codex_response_guard_enabled: z.boolean().optional(), // OpenAI/Codex: retry malformed reasoning responses
+    codex_response_guard_status_codes: z
+      .string()
+      .optional()
+      .refine(
+        isOptionalCodexResponseGuardStatusCodes,
+        'Codex response guard status codes must use 400-599 values or ranges'
+      ),
+    codex_response_guard_error_messages: z.string().optional(),
+    codex_response_guard_retry_times: z
+      .number()
+      .int()
+      .min(1)
+      .max(CODEX_RESPONSE_GUARD_MAX_RETRY_TIMES)
+      .optional(),
     allow_inference_geo: z.boolean().optional(), // OpenAI/Anthropic: inference geography
     allow_speed: z.boolean().optional(), // Anthropic: speed mode control
     claude_beta_query: z.boolean().optional(), // Anthropic: beta query passthrough
@@ -443,6 +471,11 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   disable_store: false,
   allow_safety_identifier: false,
   allow_include_obfuscation: false,
+  codex_response_guard_enabled: false,
+  codex_response_guard_status_codes: '',
+  codex_response_guard_error_messages:
+    CODEX_RESPONSE_GUARD_DEFAULT_ERROR_MESSAGE,
+  codex_response_guard_retry_times: CODEX_RESPONSE_GUARD_DEFAULT_RETRY_TIMES,
   allow_inference_geo: false,
   allow_speed: false,
   claude_beta_query: false,
@@ -508,6 +541,11 @@ export function transformChannelToFormDefaults(
   let disableStore = false
   let allowSafetyIdentifier = false
   let allowIncludeObfuscation = false
+  let codexResponseGuardEnabled = false
+  let codexResponseGuardStatusCodes = ''
+  let codexResponseGuardErrorMessages =
+    CODEX_RESPONSE_GUARD_DEFAULT_ERROR_MESSAGE
+  let codexResponseGuardRetryTimes = CODEX_RESPONSE_GUARD_DEFAULT_RETRY_TIMES
   let allowInferenceGeo = false
   let allowSpeed = false
   let claudeBetaQuery = false
@@ -528,6 +566,19 @@ export function transformChannelToFormDefaults(
       disableStore = parsed.disable_store === true
       allowSafetyIdentifier = parsed.allow_safety_identifier === true
       allowIncludeObfuscation = parsed.allow_include_obfuscation === true
+      codexResponseGuardEnabled = parsed.codex_response_guard_enabled === true
+      codexResponseGuardStatusCodes =
+        typeof parsed.codex_response_guard_status_codes === 'string'
+          ? parsed.codex_response_guard_status_codes
+          : ''
+      codexResponseGuardErrorMessages =
+        typeof parsed.codex_response_guard_error_messages === 'string'
+          ? parsed.codex_response_guard_error_messages
+          : CODEX_RESPONSE_GUARD_DEFAULT_ERROR_MESSAGE
+      codexResponseGuardRetryTimes =
+        typeof parsed.codex_response_guard_retry_times === 'number'
+          ? parsed.codex_response_guard_retry_times
+          : CODEX_RESPONSE_GUARD_DEFAULT_RETRY_TIMES
       allowInferenceGeo = parsed.allow_inference_geo === true
       allowSpeed = parsed.allow_speed === true
       claudeBetaQuery = parsed.claude_beta_query === true
@@ -586,6 +637,10 @@ export function transformChannelToFormDefaults(
     allow_service_tier: allowServiceTier,
     disable_store: disableStore,
     allow_include_obfuscation: allowIncludeObfuscation,
+    codex_response_guard_enabled: codexResponseGuardEnabled,
+    codex_response_guard_status_codes: codexResponseGuardStatusCodes,
+    codex_response_guard_error_messages: codexResponseGuardErrorMessages,
+    codex_response_guard_retry_times: codexResponseGuardRetryTimes,
     allow_inference_geo: allowInferenceGeo,
     allow_speed: allowSpeed,
     claude_beta_query: claudeBetaQuery,
@@ -686,6 +741,15 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
       formData.allow_safety_identifier === true
     settingsObj.allow_include_obfuscation =
       formData.allow_include_obfuscation === true
+    settingsObj.codex_response_guard_enabled =
+      formData.codex_response_guard_enabled === true
+    settingsObj.codex_response_guard_status_codes =
+      formData.codex_response_guard_status_codes ?? ''
+    settingsObj.codex_response_guard_error_messages =
+      formData.codex_response_guard_error_messages ?? ''
+    settingsObj.codex_response_guard_retry_times =
+      formData.codex_response_guard_retry_times ??
+      CODEX_RESPONSE_GUARD_DEFAULT_RETRY_TIMES
     settingsObj.allow_inference_geo = formData.allow_inference_geo === true
   } else {
     if ('disable_store' in settingsObj) {
@@ -696,6 +760,18 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     }
     if ('allow_include_obfuscation' in settingsObj) {
       delete settingsObj.allow_include_obfuscation
+    }
+    if ('codex_response_guard_enabled' in settingsObj) {
+      delete settingsObj.codex_response_guard_enabled
+    }
+    if ('codex_response_guard_status_codes' in settingsObj) {
+      delete settingsObj.codex_response_guard_status_codes
+    }
+    if ('codex_response_guard_error_messages' in settingsObj) {
+      delete settingsObj.codex_response_guard_error_messages
+    }
+    if ('codex_response_guard_retry_times' in settingsObj) {
+      delete settingsObj.codex_response_guard_retry_times
     }
     if (formData.type !== 14 && 'allow_inference_geo' in settingsObj) {
       delete settingsObj.allow_inference_geo

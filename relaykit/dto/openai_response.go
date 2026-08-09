@@ -229,11 +229,12 @@ type Usage struct {
 	UsageSource          string        `json:"usage_source,omitempty"`
 	BillingUsage         *BillingUsage `json:"billing_usage,omitempty"`
 
-	PromptTokensDetails    InputTokenDetails  `json:"prompt_tokens_details"`
-	CompletionTokenDetails OutputTokenDetails `json:"completion_tokens_details"`
-	InputTokens            int                `json:"input_tokens"`
-	OutputTokens           int                `json:"output_tokens"`
-	InputTokensDetails     *InputTokenDetails `json:"input_tokens_details"`
+	PromptTokensDetails    InputTokenDetails   `json:"prompt_tokens_details"`
+	CompletionTokenDetails OutputTokenDetails  `json:"completion_tokens_details"`
+	OutputTokensDetails    *OutputTokenDetails `json:"output_tokens_details,omitempty"`
+	InputTokens            int                 `json:"input_tokens"`
+	OutputTokens           int                 `json:"output_tokens"`
+	InputTokensDetails     *InputTokenDetails  `json:"input_tokens_details"`
 
 	// claude cache 1h
 	ClaudeCacheCreation5mTokens int `json:"claude_cache_creation_5_m_tokens"`
@@ -386,6 +387,8 @@ const (
 type ResponsesStreamResponse struct {
 	Type     string                   `json:"type"`
 	Response *OpenAIResponsesResponse `json:"response,omitempty"`
+	Error    any                      `json:"error,omitempty"`
+	Message  string                   `json:"message,omitempty"`
 	Delta    string                   `json:"delta,omitempty"`
 	Item     *ResponsesOutput         `json:"item,omitempty"`
 	// - response.function_call_arguments.delta

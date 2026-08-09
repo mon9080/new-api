@@ -317,4 +317,7 @@ func InjectTieredBillingInfo(other map[string]interface{}, relayInfo *relaycommo
 	if result != nil {
 		other["matched_tier"] = result.MatchedTier
 	}
+	if snap.ModelName != "" {
+		other["billing_model_name"] = snap.ModelName
+	}
 }

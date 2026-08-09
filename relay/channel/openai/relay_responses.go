@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,8 +31,20 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	if oaiError := responsesResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
+	oaiError := responsesResponse.GetOpenAIError()
+	var upstreamError *types.NewAPIError
+	if oaiError != nil && (oaiError.Type != "" || oaiError.Message != "") {
+		upstreamError = types.WithOpenAIError(*oaiError, resp.StatusCode)
+	}
+	protocolErrorMessage := ""
+	if oaiError != nil {
+		protocolErrorMessage = oaiError.Message
+	}
+	if guardErr := codexResponseGuardError(c, info, resp.StatusCode, protocolErrorMessage, &responsesResponse, false, upstreamError); guardErr != nil {
+		return nil, guardErr
+	}
+	if upstreamError != nil {
+		return nil, upstreamError
 	}
 
 	// 写入新的 response body
@@ -80,6 +93,22 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 	defer service.CloseResponseBodyGracefully(resp)
 
+	guardEnabled := codexResponseGuardEnabled(info)
+	if guardEnabled {
+		originalDisablePing := info.DisablePing
+		info.DisablePing = true
+		defer func() {
+			info.DisablePing = originalDisablePing
+		}()
+	}
+
+	type bufferedStreamEvent struct {
+		response dto.ResponsesStreamResponse
+		data     string
+	}
+	var bufferedEvents []bufferedStreamEvent
+	var guardErr *types.NewAPIError
+
 	var usage = &dto.Usage{}
 	var responseTextBuilder strings.Builder
 	imageCounter := &relaycommon.ImageGenerationCallCounter{}
@@ -94,7 +123,36 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			sr.Error(err)
 			return
 		}
-		sendResponsesStreamData(c, streamResponse, data)
+		if guardEnabled {
+			bufferedEvents = append(bufferedEvents, bufferedStreamEvent{response: streamResponse, data: data})
+		} else {
+			sendResponsesStreamData(c, streamResponse, data)
+		}
+		if guardErr == nil {
+			var protocolErrorMessage string
+			var upstreamError *types.NewAPIError
+			switch streamResponse.Type {
+			case "error":
+				if streamError := dto.GetOpenAIError(streamResponse.Error); streamError != nil {
+					protocolErrorMessage = streamError.Message
+					upstreamError = types.WithOpenAIError(*streamError, resp.StatusCode)
+				}
+				if protocolErrorMessage == "" {
+					protocolErrorMessage = streamResponse.Message
+				}
+				if upstreamError == nil && protocolErrorMessage != "" {
+					upstreamError = types.NewOpenAIError(errors.New(protocolErrorMessage), types.ErrorCodeBadResponse, resp.StatusCode)
+				}
+			case "response.failed":
+				if streamResponse.Response != nil {
+					if streamError := streamResponse.Response.GetOpenAIError(); streamError != nil {
+						protocolErrorMessage = streamError.Message
+						upstreamError = types.WithOpenAIError(*streamError, resp.StatusCode)
+					}
+				}
+			}
+			guardErr = codexResponseGuardError(c, info, resp.StatusCode, protocolErrorMessage, streamResponse.Response, true, upstreamError)
+		}
 		switch streamResponse.Type {
 		case "response.completed", "response.done":
 			if streamResponse.Response != nil {
@@ -157,6 +215,16 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			}
 		}
 	})
+
+	if guardErr != nil {
+		c.Writer.Header().Del("Content-Type")
+		return nil, guardErr
+	}
+	if guardEnabled {
+		for _, event := range bufferedEvents {
+			sendResponsesStreamData(c, event.response, event.data)
+		}
+	}
 
 	if usage.CompletionTokens == 0 {
 		// 计算输出文本的 token 数量

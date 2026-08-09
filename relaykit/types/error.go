@@ -72,6 +72,7 @@ const (
 	ErrorCodeReadResponseBodyFailed ErrorCode = "read_response_body_failed"
 	ErrorCodeBadResponseStatusCode  ErrorCode = "bad_response_status_code"
 	ErrorCodeBadResponse            ErrorCode = "bad_response"
+	ErrorCodeCodexResponseGuard     ErrorCode = "codex_response_guard"
 	ErrorCodeBadResponseBody        ErrorCode = "bad_response_body"
 	ErrorCodeEmptyResponse          ErrorCode = "empty_response"
 	ErrorCodeAwsInvokeError         ErrorCode = "aws_invoke_error"
@@ -88,14 +89,16 @@ const (
 )
 
 type NewAPIError struct {
-	Err            error
-	RelayError     any
-	skipRetry      bool
-	recordErrorLog *bool
-	errorType      ErrorType
-	errorCode      ErrorCode
-	StatusCode     int
-	Metadata       json.RawMessage
+	Err             error
+	RelayError      any
+	skipRetry       bool
+	skipAutoDisable bool
+	retryLimit      int
+	recordErrorLog  *bool
+	errorType       ErrorType
+	errorCode       ErrorCode
+	StatusCode      int
+	Metadata        json.RawMessage
 }
 
 // Unwrap enables errors.Is / errors.As to work with NewAPIError by exposing the underlying error.
@@ -378,9 +381,35 @@ func IsSkipRetryError(err *NewAPIError) bool {
 	return err.skipRetry
 }
 
+func IsSkipAutoDisableError(err *NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	return err.skipAutoDisable
+}
+
+func (e *NewAPIError) GetRetryLimit() int {
+	if e == nil {
+		return 0
+	}
+	return e.retryLimit
+}
+
 func ErrOptionWithSkipRetry() NewAPIErrorOptions {
 	return func(e *NewAPIError) {
 		e.skipRetry = true
+	}
+}
+
+func ErrOptionWithSkipAutoDisable() NewAPIErrorOptions {
+	return func(e *NewAPIError) {
+		e.skipAutoDisable = true
+	}
+}
+
+func ErrOptionWithRetryLimit(retryLimit int) NewAPIErrorOptions {
+	return func(e *NewAPIError) {
+		e.retryLimit = retryLimit
 	}
 }
 

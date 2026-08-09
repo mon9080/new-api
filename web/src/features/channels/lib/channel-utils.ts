@@ -123,6 +123,26 @@ export function getChannelTypeIcon(type: number): string {
   return TYPE_TO_ICON[type] || 'OpenAI'
 }
 
+/**
+ * Return a channel base URL only when it is safe to open as an external link.
+ */
+export function getChannelExternalLink(
+  baseUrl?: string | null
+): string | null {
+  if (!baseUrl) {
+    return null
+  }
+
+  try {
+    const url = new URL(baseUrl)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+      ? baseUrl
+      : null
+  } catch {
+    return null
+  }
+}
+
 // ============================================================================
 // Status Utilities
 // ============================================================================

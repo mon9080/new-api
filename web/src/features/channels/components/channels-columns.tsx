@@ -32,7 +32,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
-import { BadgeListCell } from '@/components/data-table'
+import { BadgeListCell, TruncatedCell } from '@/components/data-table'
 import { GroupBadge } from '@/components/group-badge'
 import { ProviderBadge } from '@/components/provider-badge'
 import { StatusBadge, type StatusBadgeProps } from '@/components/status-badge'
@@ -61,6 +61,7 @@ import {
   formatRelativeTime,
   formatResponseTime,
   getBalanceVariant,
+  getChannelExternalLink,
   getChannelTypeIcon,
   getChannelTypeLabel,
   getResponseTimeConfig,
@@ -654,16 +655,39 @@ export function useChannelsColumns(
           const settings = parseChannelSettings(channel.setting)
           const isPassThrough = settings.pass_through_body_enabled === true
           const hasParamOverride = Boolean(channel.param_override?.trim())
+          const externalLink = sensitiveVisible
+            ? getChannelExternalLink(channel.base_url)
+            : null
 
           return (
             <div className='flex max-w-full min-w-0 items-center gap-2'>
               <div className='flex max-w-full min-w-0 flex-col gap-1'>
                 <div className='flex max-w-full min-w-0 items-center gap-1.5'>
-                  <TruncatedText
-                    text={sensitiveVisible ? name : SENSITIVE_MASK}
-                    className='font-medium'
-                    maxWidth='max-w-full'
-                  />
+                  {externalLink ? (
+                    <TruncatedCell
+                      className='text-primary max-w-full font-medium'
+                      side='top'
+                      tooltipContent={t('Open in New Tab')}
+                    >
+                      <a
+                        href={externalLink}
+                        target='_blank'
+                        rel='noopener noreferrer'
+                        className='inline-block max-w-full truncate hover:underline'
+                        onClick={(event) => {
+                          event.stopPropagation()
+                        }}
+                      >
+                        {name}
+                      </a>
+                    </TruncatedCell>
+                  ) : (
+                    <TruncatedText
+                      text={sensitiveVisible ? name : SENSITIVE_MASK}
+                      className='font-medium'
+                      maxWidth='max-w-full'
+                    />
+                  )}
                   {isPassThrough && (
                     <TooltipProvider delay={100}>
                       <Tooltip>

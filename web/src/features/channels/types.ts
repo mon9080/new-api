@@ -99,6 +99,10 @@ export interface ChannelOtherSettings {
   disable_store?: boolean
   allow_safety_identifier?: boolean
   allow_include_obfuscation?: boolean
+  codex_response_guard_enabled?: boolean
+  codex_response_guard_status_codes?: string
+  codex_response_guard_error_messages?: string
+  codex_response_guard_retry_times?: number
   allow_inference_geo?: boolean
   allow_speed?: boolean
   claude_beta_query?: boolean
