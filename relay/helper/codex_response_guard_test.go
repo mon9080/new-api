@@ -122,12 +122,13 @@ func TestCodexResponseGuardErrorMessageRules(t *testing.T) {
 		require.False(t, MatchCodexResponseGuardErrorMessage(settings, codexCapacityMessage))
 	})
 
-	t.Run("matches complete configured line only", func(t *testing.T) {
-		messages := "temporary failure\n" + codexCapacityMessage
+	t.Run("matches normalized configured fragments", func(t *testing.T) {
+		messages := "temporary failure\nselected model is at capacity\n..."
 		settings := dto.ChannelOtherSettings{CodexResponseGuardErrorMessages: &messages}
-		require.True(t, MatchCodexResponseGuardErrorMessage(settings, " TEMPORARY FAILURE "))
-		require.False(t, MatchCodexResponseGuardErrorMessage(settings, "temporary"))
-		require.False(t, MatchCodexResponseGuardErrorMessage(settings, codexCapacityMessage+" retrying"))
+		require.True(t, MatchCodexResponseGuardErrorMessage(settings, "Upstream: TEMPORARY—FAILURE; retry later"))
+		require.True(t, MatchCodexResponseGuardErrorMessage(settings, "Error: Selected MODEL is at capacity!!! Please retry."))
+		require.False(t, MatchCodexResponseGuardErrorMessage(settings, "temporarily unavailable"))
+		require.False(t, MatchCodexResponseGuardErrorMessage(settings, "ordinary upstream error"))
 	})
 }
 

@@ -24,6 +24,7 @@ func newOaiResponsesGuardTestContext(t *testing.T, body string, guardEnabled boo
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	common.SetContextKey(c, constant.ContextKeyChannelAutoBan, true)
 
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -191,6 +192,36 @@ func TestOaiResponsesStreamHandlerCodexResponseGuard(t *testing.T) {
 		require.Equal(t, http.StatusOK, err.StatusCode)
 		require.False(t, types.IsSkipAutoDisableError(err))
 		require.True(t, service.ShouldDisableChannel(err))
+		require.Empty(t, recorder.Body.String())
+	})
+
+	t.Run("uses guard retry when automatic disable matches but channel auto-ban is disabled", func(t *testing.T) {
+		originalEnabled := common.AutomaticDisableChannelEnabled
+		originalKeywords := operation_setting.AutomaticDisableKeywords
+		originalRanges := operation_setting.AutomaticDisableStatusCodeRanges
+		t.Cleanup(func() {
+			common.AutomaticDisableChannelEnabled = originalEnabled
+			operation_setting.AutomaticDisableKeywords = originalKeywords
+			operation_setting.AutomaticDisableStatusCodeRanges = originalRanges
+		})
+		common.AutomaticDisableChannelEnabled = true
+		operation_setting.AutomaticDisableKeywords = []string{"selected model is at capacity"}
+		operation_setting.AutomaticDisableStatusCodeRanges = nil
+
+		stream := "data: {\"type\":\"error\",\"message\":\"Selected model is at capacity. Please try a different model.\"}\n" +
+			"data: [DONE]\n"
+		c, recorder, resp, info := newOaiResponsesGuardTestContext(t, stream, true)
+		common.SetContextKey(c, constant.ContextKeyChannelAutoBan, false)
+		resp.Header.Set("Content-Type", "text/event-stream")
+		info.IsStream = true
+
+		usage, err := OaiResponsesStreamHandler(c, info, resp)
+
+		require.Nil(t, usage)
+		require.NotNil(t, err)
+		require.Equal(t, http.StatusBadGateway, err.StatusCode)
+		require.Equal(t, types.ErrorCodeCodexResponseGuard, err.GetErrorCode())
+		require.True(t, types.IsSkipAutoDisableError(err))
 		require.Empty(t, recorder.Body.String())
 	})
 

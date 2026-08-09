@@ -102,6 +102,17 @@ describe('Codex response guard channel settings', () => {
     assert.equal(defaults.codex_response_guard_error_messages, '')
   })
 
+  test('saved HTTP status code 516 is preserved independently of the built-in rule', () => {
+    const defaults = transformChannelToFormDefaults(
+      openAIChannel({
+        codex_response_guard_enabled: true,
+        codex_response_guard_status_codes: '429,516,500-503',
+      })
+    )
+
+    assert.equal(defaults.codex_response_guard_status_codes, '429,516,500-503')
+  })
+
   test('status matcher accepts optional 4xx and 5xx values and ranges only', () => {
     const parseStatusCodes = (value: string) =>
       channelFormSchema.safeParse({

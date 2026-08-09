@@ -4548,7 +4548,7 @@ export function ChannelMutateDrawer({
                                               </FormControl>
                                               <FormDescription>
                                                 {t(
-                                                  'Optional 400-599 status codes or ranges'
+                                                  'Optional upstream HTTP 400-599 status codes or ranges. Built-in reasoning_tokens values 516, 1034, 1552, ... are always matched and do not need to be entered here.'
                                                 )}
                                               </FormDescription>
                                               <FormMessage />
@@ -4613,7 +4613,7 @@ export function ChannelMutateDrawer({
                                               </FormControl>
                                               <FormDescription>
                                                 {t(
-                                                  'Optional complete error messages, one per line'
+                                                  'Optional error fragments, one per line; matching ignores case and punctuation'
                                                 )}
                                               </FormDescription>
                                               <FormMessage />

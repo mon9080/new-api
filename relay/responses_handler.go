@@ -136,7 +136,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 				if matchErr != nil {
 					logger.LogError(c, "invalid codex response guard configuration: "+matchErr.Error())
 				} else if match != nil {
-					if service.ShouldDisableChannel(newAPIError) {
+					if helper.ShouldDeferCodexResponseGuardToAutoDisable(c, newAPIError) {
 						helper.LogCodexResponseGuardConflict(c, info, match, httpResp.StatusCode)
 					} else {
 						return helper.NewCodexResponseGuardError(c, info, match, httpResp.StatusCode, false)

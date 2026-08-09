@@ -4,11 +4,15 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 )
@@ -74,16 +78,31 @@ func MatchCodexResponseGuardErrorMessage(settings dto.ChannelOtherSettings, mess
 	if settings.CodexResponseGuardErrorMessages != nil {
 		configuredMessages = *settings.CodexResponseGuardErrorMessages
 	}
-	want := strings.TrimSpace(message)
-	if want == "" {
+	normalizedMessage := normalizeCodexResponseGuardErrorMessage(message)
+	if normalizedMessage == "" {
 		return false
 	}
 	for _, configured := range strings.Split(configuredMessages, "\n") {
-		if strings.EqualFold(strings.TrimSpace(configured), want) {
+		normalizedConfigured := normalizeCodexResponseGuardErrorMessage(configured)
+		if normalizedConfigured != "" && strings.Contains(normalizedMessage, normalizedConfigured) {
 			return true
 		}
 	}
 	return false
+}
+
+func normalizeCodexResponseGuardErrorMessage(message string) string {
+	return strings.Join(strings.FieldsFunc(strings.ToLower(message), func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsPunct(r)
+	}), " ")
+}
+
+func ShouldDeferCodexResponseGuardToAutoDisable(c *gin.Context, originalErr *types.NewAPIError) bool {
+	if !service.ShouldDisableChannel(originalErr) {
+		return false
+	}
+	autoBan, exists := common.GetContextKeyType[bool](c, constant.ContextKeyChannelAutoBan)
+	return !exists || autoBan
 }
 
 func CodexResponseGuardRetryTimes(settings dto.ChannelOtherSettings) int {

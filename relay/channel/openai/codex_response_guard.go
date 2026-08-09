@@ -6,7 +6,6 @@ import (
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
-	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,7 +22,7 @@ func codexResponseGuardError(c *gin.Context, info *relaycommon.RelayInfo, upstre
 	if match == nil {
 		return nil
 	}
-	if originalErr != nil && service.ShouldDisableChannel(originalErr) {
+	if helper.ShouldDeferCodexResponseGuardToAutoDisable(c, originalErr) {
 		helper.LogCodexResponseGuardConflict(c, info, match, upstreamStatus)
 		return originalErr
 	}
