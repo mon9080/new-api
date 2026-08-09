@@ -126,9 +126,7 @@ export function getChannelTypeIcon(type: number): string {
 /**
  * Return a channel base URL only when it is safe to open as an external link.
  */
-export function getChannelExternalLink(
-  baseUrl?: string | null
-): string | null {
+export function getChannelExternalLink(baseUrl?: string | null): string | null {
   if (!baseUrl) {
     return null
   }
