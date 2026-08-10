@@ -143,7 +143,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				if upstreamError == nil && protocolErrorMessage != "" {
 					upstreamError = types.NewOpenAIError(errors.New(protocolErrorMessage), types.ErrorCodeBadResponse, resp.StatusCode)
 				}
-			case "response.failed":
+			case "response.failed", "response.error":
 				if streamResponse.Response != nil {
 					if streamError := streamResponse.Response.GetOpenAIError(); streamError != nil {
 						protocolErrorMessage = streamError.Message

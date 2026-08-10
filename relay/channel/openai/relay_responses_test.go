@@ -241,6 +241,23 @@ func TestOaiResponsesStreamHandlerCodexResponseGuard(t *testing.T) {
 		require.Empty(t, recorder.Body.String())
 	})
 
+	t.Run("converts response error without leaking buffered stream", func(t *testing.T) {
+		stream := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n" +
+			"data: {\"type\":\"response.error\",\"response\":{\"status\":\"failed\",\"error\":{\"type\":\"server_overloaded\",\"message\":\"Selected model is at capacity. Please try a different model.\"}}}\n" +
+			"data: [DONE]\n"
+		c, recorder, resp, info := newOaiResponsesGuardTestContext(t, stream, true)
+		resp.Header.Set("Content-Type", "text/event-stream")
+		info.IsStream = true
+
+		usage, err := OaiResponsesStreamHandler(c, info, resp)
+
+		require.Nil(t, usage)
+		require.NotNil(t, err)
+		require.Equal(t, http.StatusBadGateway, err.StatusCode)
+		require.Equal(t, types.ErrorCodeCodexResponseGuard, err.GetErrorCode())
+		require.Empty(t, recorder.Body.String())
+	})
+
 	t.Run("does not scan normal model output for configured error text", func(t *testing.T) {
 		stream := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Selected model is at capacity. Please try a different model.\"}\n" +
 			"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"output_tokens\":8,\"total_tokens\":10}}}\n" +
