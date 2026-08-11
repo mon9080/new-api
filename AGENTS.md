@@ -138,6 +138,12 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 - In React components, use `useTranslation()` and call `t('English key')` for user-facing text.
 - Follow `web/AGENTS.md` for detailed frontend conventions, including TypeScript, component structure, styling, accessibility, testing, and build checks.
 
+### Local Full Verification Prerequisites
+
+- A fresh worktree may not contain `web/node_modules` or the generated `web/dist`. In that state, frontend checks fail because packages such as `zod` and `tsgo` are unavailable, and root Go builds fail at `//go:embed web/dist`.
+- After this same environment failure is observed, restore the verification prerequisites in this order: `cd web && bun install --frozen-lockfile`, then `bun run build`, then return to the repository root and run `go test ./... -count=1`.
+- Treat these failures as missing local build prerequisites, not as source regressions. Do not commit `web/node_modules` or generated `web/dist`.
+
 ### Project Governance
 
 **Protected project information:** The following project-related information is strictly protected and MUST NOT be modified, deleted, replaced, or removed under any circumstances:

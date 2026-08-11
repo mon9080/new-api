@@ -95,6 +95,21 @@ func TestOaiResponsesHandlerCodexResponseGuard(t *testing.T) {
 		require.True(t, types.IsSkipAutoDisableError(err))
 		require.Empty(t, recorder.Body.String())
 	})
+
+	for _, code := range []string{"server_is_overloaded", "slow_down"} {
+		t.Run("maps Codex "+code+" code to the configured client-visible error", func(t *testing.T) {
+			errorBody := strings.Replace(`{"object":"response","status":"failed","error":{"code":"$CODE","message":"The server is currently overloaded."}}`, "$CODE", code, 1)
+			c, recorder, resp, info := newOaiResponsesGuardTestContext(t, errorBody, true)
+
+			usage, err := OaiResponsesHandler(c, info, resp)
+
+			require.Nil(t, usage)
+			require.NotNil(t, err)
+			require.Equal(t, http.StatusBadGateway, err.StatusCode)
+			require.Equal(t, types.ErrorCodeCodexResponseGuard, err.GetErrorCode())
+			require.Empty(t, recorder.Body.String())
+		})
+	}
 }
 
 func TestOaiResponsesStreamHandlerCodexResponseGuard(t *testing.T) {
@@ -238,6 +253,23 @@ func TestOaiResponsesStreamHandlerCodexResponseGuard(t *testing.T) {
 		require.Nil(t, usage)
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadGateway, err.StatusCode)
+		require.Empty(t, recorder.Body.String())
+	})
+
+	t.Run("maps response failed overload code to the configured client-visible error", func(t *testing.T) {
+		stream := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n" +
+			"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"The server is currently overloaded.\"}}}\n" +
+			"data: [DONE]\n"
+		c, recorder, resp, info := newOaiResponsesGuardTestContext(t, stream, true)
+		resp.Header.Set("Content-Type", "text/event-stream")
+		info.IsStream = true
+
+		usage, err := OaiResponsesStreamHandler(c, info, resp)
+
+		require.Nil(t, usage)
+		require.NotNil(t, err)
+		require.Equal(t, http.StatusBadGateway, err.StatusCode)
+		require.Equal(t, types.ErrorCodeCodexResponseGuard, err.GetErrorCode())
 		require.Empty(t, recorder.Body.String())
 	})
 

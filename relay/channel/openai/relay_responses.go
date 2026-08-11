@@ -38,7 +38,7 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	}
 	protocolErrorMessage := ""
 	if oaiError != nil {
-		protocolErrorMessage = oaiError.Message
+		protocolErrorMessage = codexResponseGuardProtocolErrorText(oaiError)
 	}
 	if guardErr := codexResponseGuardError(c, info, resp.StatusCode, protocolErrorMessage, &responsesResponse, false, upstreamError); guardErr != nil {
 		return nil, guardErr
@@ -134,7 +134,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			switch streamResponse.Type {
 			case "error":
 				if streamError := dto.GetOpenAIError(streamResponse.Error); streamError != nil {
-					protocolErrorMessage = streamError.Message
+					protocolErrorMessage = codexResponseGuardProtocolErrorText(streamError)
 					upstreamError = types.WithOpenAIError(*streamError, resp.StatusCode)
 				}
 				if protocolErrorMessage == "" {
@@ -146,7 +146,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			case "response.failed", "response.error":
 				if streamResponse.Response != nil {
 					if streamError := streamResponse.Response.GetOpenAIError(); streamError != nil {
-						protocolErrorMessage = streamError.Message
+						protocolErrorMessage = codexResponseGuardProtocolErrorText(streamError)
 						upstreamError = types.WithOpenAIError(*streamError, resp.StatusCode)
 					}
 				}
