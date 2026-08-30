@@ -229,7 +229,7 @@ func responsesInputContentToClaudeMediaMessages(c context.Context, content any) 
 func responsesFunctionCallItemToClaudeToolUse(item map[string]any, inputKey string) dto.ClaudeMediaMessage {
 	return dto.ClaudeMediaMessage{
 		Type:  "tool_use",
-		Id:    CallID(item),
+		Id:    sharedclaude.NormalizeToolID(CallID(item)),
 		Name:  strings.TrimSpace(kitutil.Interface2String(item["name"])),
 		Input: ObjectValue(item[inputKey], inputKey),
 	}
@@ -238,7 +238,7 @@ func responsesFunctionCallItemToClaudeToolUse(item map[string]any, inputKey stri
 func responsesFunctionOutputItemToClaudeToolResult(item map[string]any) dto.ClaudeMediaMessage {
 	return dto.ClaudeMediaMessage{
 		Type:      "tool_result",
-		ToolUseId: CallID(item),
+		ToolUseId: sharedclaude.NormalizeToolID(CallID(item)),
 		Content:   responsesToolOutputValue(item["output"]),
 	}
 }
