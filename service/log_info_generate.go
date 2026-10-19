@@ -375,6 +375,6 @@ func InjectTieredBillingInfo(other *model.LogOther, relayInfo *relaycommon.Relay
 		}
 	}
 	if snap.ModelName != "" {
-		other["billing_model_name"] = snap.ModelName
+		other.SetPublic("billing_model_name", snap.ModelName)
 	}
 }
