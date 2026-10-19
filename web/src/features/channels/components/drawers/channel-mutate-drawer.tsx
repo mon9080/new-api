@@ -38,6 +38,7 @@ import {
   Code,
   Route,
   Settings,
+  Shield,
   SlidersHorizontal,
   Wand2,
 } from 'lucide-react'
@@ -587,6 +588,9 @@ export function ChannelMutateDrawer({
   const keyMode = formValues.key_mode
   const currentGroups = formValues.group
   const currentType = formValues.type
+  const currentCodexResponseGuardEnabled = form.watch(
+    'codex_response_guard_enabled'
+  )
   const baseUrlPlaceholder = [CHANNEL_TYPE_VLLM, CHANNEL_TYPE_SGLANG].includes(
     currentType
   )
@@ -3119,6 +3123,136 @@ export function ChannelMutateDrawer({
     </div>
   )
 
+  const responseGuardFields =
+    (OPENAI_FIELD_PASSTHROUGH_TYPES.has(currentType) ||
+      CLAUDE_FIELD_PASSTHROUGH_TYPES.has(currentType)) && (
+      <div
+        role='group'
+        aria-label={t('Response guard')}
+        className={channelConfigurationBlockClassName(
+          configuration.blocks.fieldPassthrough,
+          'flex flex-col gap-4'
+        )}
+      >
+        <CardHeading
+          title={t('Response guard')}
+          status={configuration.blocks.fieldPassthrough}
+          icon={<Shield className='h-4 w-4' />}
+          iconTone='chart-4'
+        />
+        <fieldset disabled={sensitiveLocked} className='disabled:opacity-60'>
+          <div className='divide-border space-y-0 divide-y border-y'>
+            <FormField
+              control={form.control}
+              name='codex_response_guard_enabled'
+              render={({ field }) => (
+                <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                  <div className='space-y-0.5'>
+                    <FormLabel className='text-sm'>
+                      {t('Response guard')}
+                    </FormLabel>
+                    <FormDescription>
+                      {t(
+                        'Retry Responses or Messages matching configured upstream errors instead of failing the request'
+                      )}
+                    </FormDescription>
+                  </div>
+                  <FormControl>
+                    <Switch
+                      disabled={sensitiveLocked}
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  </FormControl>
+                </FormItem>
+              )}
+            />
+
+            {currentCodexResponseGuardEnabled && (
+              <div className='grid gap-4 px-4 py-3 lg:grid-cols-2'>
+                <FormField
+                  control={form.control}
+                  name='codex_response_guard_status_codes'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Response guard status codes')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder='429,500-503'
+                          value={field.value ?? ''}
+                          onChange={field.onChange}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Optional upstream HTTP 400-599 status codes or ranges'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='codex_response_guard_retry_times'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Response guard retry times')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          type='number'
+                          min={1}
+                          max={20}
+                          step={1}
+                          value={field.value ?? 5}
+                          onChange={(event) => {
+                            const value = event.target.value
+                            field.onChange(
+                              value === '' ? undefined : Number(value)
+                            )
+                          }}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t('Maximum retries for one guarded request (1-20)')}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='codex_response_guard_error_messages'
+                  render={({ field }) => (
+                    <FormItem className='lg:col-span-2'>
+                      <FormLabel>
+                        {t('Response guard error messages')}
+                      </FormLabel>
+                      <FormControl>
+                        <Textarea
+                          rows={3}
+                          value={field.value ?? ''}
+                          onChange={field.onChange}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Optional error fragments, one per line; matching ignores case and punctuation'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+            )}
+          </div>
+        </fieldset>
+      </div>
+    )
+
   const modelsSection = (
     <div className='scroll-mt-4'>
       <ChannelModelsSection>
@@ -4769,6 +4903,7 @@ export function ChannelMutateDrawer({
               </fieldset>
             </div>
             {fieldPassthroughFields}
+            {responseGuardFields}
           </>
         }
         other={

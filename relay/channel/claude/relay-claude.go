@@ -339,14 +339,43 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		ResponseText: strings.Builder{},
 		Usage:        &dto.Usage{},
 	}
+
+	guardEnabled := helper.CodexResponseGuardEnabled(info)
+	var buffered []claudeStreamGuardEvent
+	var guardErr *types.NewAPIError
+
 	var err *types.NewAPIError
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		if guardEnabled {
+			var event dto.ClaudeResponse
+			if unmarshalErr := common.UnmarshalJsonStr(data, &event); unmarshalErr != nil {
+				sr.Error(unmarshalErr)
+				return
+			}
+			buffered = append(buffered, claudeStreamGuardEvent{response: event, data: data})
+			if guardErr == nil {
+				guardErr = claudeResponseGuardError(c, info, resp.StatusCode, &event)
+			}
+			return
+		}
 		err = HandleStreamResponseData(c, info, claudeInfo, data)
 		if err != nil {
 			sr.Stop(err)
 		}
 	})
 	info.StreamStatus.RequireTerminal()
+
+	if guardErr != nil {
+		c.Writer.Header().Del("Content-Type")
+		return nil, guardErr
+	}
+	if guardEnabled {
+		for _, event := range buffered {
+			if replayErr := HandleStreamResponseData(c, info, claudeInfo, event.data); replayErr != nil {
+				return nil, replayErr
+			}
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -453,6 +482,19 @@ func ClaudeHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	logger.LogDebug(c, "responseBody: %s", responseBody)
+
+	// Personal: the response guard also covers non-streaming Claude responses so
+	// a configured upstream error triggers a channel retry instead of surfacing.
+	if helper.CodexResponseGuardEnabled(info) {
+		var guardEvent dto.ClaudeResponse
+		if unmarshalErr := common.Unmarshal(responseBody, &guardEvent); unmarshalErr == nil {
+			if guardErr := claudeResponseGuardError(c, info, resp.StatusCode, &guardEvent); guardErr != nil {
+				c.Writer.Header().Del("Content-Type")
+				return nil, guardErr
+			}
+		}
+	}
+
 	handleErr := HandleClaudeResponseData(c, info, claudeInfo, resp, responseBody)
 	if handleErr != nil {
 		return nil, handleErr

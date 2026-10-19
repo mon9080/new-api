@@ -823,15 +823,6 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
       formData.allow_safety_identifier === true
     settingsObj.allow_include_obfuscation =
       formData.allow_include_obfuscation === true
-    settingsObj.codex_response_guard_enabled =
-      formData.codex_response_guard_enabled === true
-    settingsObj.codex_response_guard_status_codes =
-      formData.codex_response_guard_status_codes ?? ''
-    settingsObj.codex_response_guard_error_messages =
-      formData.codex_response_guard_error_messages ?? ''
-    settingsObj.codex_response_guard_retry_times =
-      formData.codex_response_guard_retry_times ??
-      CODEX_RESPONSE_GUARD_DEFAULT_RETRY_TIMES
     settingsObj.allow_inference_geo = formData.allow_inference_geo === true
   } else {
     if ('disable_store' in settingsObj) {
@@ -843,6 +834,34 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     if ('allow_include_obfuscation' in settingsObj) {
       delete settingsObj.allow_include_obfuscation
     }
+    if ('codex_response_guard_enabled' in settingsObj) {
+      delete settingsObj.codex_response_guard_enabled
+    }
+    if ('codex_response_guard_status_codes' in settingsObj) {
+      delete settingsObj.codex_response_guard_status_codes
+    }
+    if ('codex_response_guard_error_messages' in settingsObj) {
+      delete settingsObj.codex_response_guard_error_messages
+    }
+    if ('codex_response_guard_retry_times' in settingsObj) {
+      delete settingsObj.codex_response_guard_retry_times
+    }
+  }
+
+  if (
+    OPENAI_FIELD_PASSTHROUGH_TYPES.has(formData.type) ||
+    CLAUDE_FIELD_PASSTHROUGH_TYPES.has(formData.type)
+  ) {
+    settingsObj.codex_response_guard_enabled =
+      formData.codex_response_guard_enabled === true
+    settingsObj.codex_response_guard_status_codes =
+      formData.codex_response_guard_status_codes ?? ''
+    settingsObj.codex_response_guard_error_messages =
+      formData.codex_response_guard_error_messages ?? ''
+    settingsObj.codex_response_guard_retry_times =
+      formData.codex_response_guard_retry_times ??
+      CODEX_RESPONSE_GUARD_DEFAULT_RETRY_TIMES
+  } else {
     if ('codex_response_guard_enabled' in settingsObj) {
       delete settingsObj.codex_response_guard_enabled
     }
