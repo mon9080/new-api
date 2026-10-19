@@ -175,6 +175,21 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = types.NewError(billingErr, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
 			break
 		}
+		// Personal: the pre-consume snapshot was captured before a channel was
+		// selected, so it priced the client-facing alias. Recompute it now that
+		// the channel's model_mapping is known, otherwise a mapped tiered_expr
+		// upstream model is billed at the alias price.
+		repricedData, priceErr := helper.ModelPriceHelper(c, relayInfo, relayInfo.GetEstimatePromptTokens(), &types.TokenCountMeta{})
+		if priceErr != nil {
+			newAPIError = types.NewError(priceErr, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
+			break
+		}
+		if relayInfo.Billing != nil && !repricedData.FreeModel {
+			if reserveErr := relayInfo.Billing.Reserve(repricedData.QuotaToPreConsume); reserveErr != nil {
+				newAPIError = types.NewError(reserveErr, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+				break
+			}
+		}
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
 			newAPIError = billingErr
 			break

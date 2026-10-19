@@ -56,6 +56,13 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 	}
 	info.SetEstimatePromptTokens(tokens)
 
+	// Personal: resolve the channel's model mapping before pricing so a
+	// tiered_expr upstream model is billed instead of the client-facing alias.
+	// The mapping is taken from the context key set by the channel selector when
+	// available; otherwise fall back to the origin model name.
+	if billingErr := helper.PrepareBillingModelName(c, info); billingErr != nil {
+		return types.NewError(billingErr, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
+	}
 	priceData, err := helper.ModelPriceHelper(c, info, tokens, meta)
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
