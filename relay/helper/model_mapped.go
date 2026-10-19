@@ -78,15 +78,9 @@ type ChannelModelMappingResult struct {
 }
 
 func ResolveChannelModelMapping(relayMode int, originModelName, modelMapping string) (ChannelModelMappingResult, error) {
-	isResponsesCompact := relayMode == relayconstant.RelayModeResponsesCompact
-	mappingModelName := originModelName
-	if isResponsesCompact && strings.HasSuffix(originModelName, ratio_setting.CompactModelSuffix) {
-		mappingModelName = strings.TrimSuffix(originModelName, ratio_setting.CompactModelSuffix)
-	}
-
 	result := ChannelModelMappingResult{
 		OriginModelName:   originModelName,
-		UpstreamModelName: mappingModelName,
+		UpstreamModelName: originModelName,
 	}
 	if modelMapping != "" && modelMapping != "{}" {
 		modelMap := make(map[string]string)
@@ -96,7 +90,7 @@ func ResolveChannelModelMapping(relayMode int, originModelName, modelMapping str
 
 		// Preserve channel mapping semantics, including chained mappings and the
 		// legacy self-reference behavior used by existing channel configurations.
-		currentModel := mappingModelName
+		currentModel := originModelName
 		visitedModels := map[string]bool{
 			currentModel: true,
 		}
@@ -124,9 +118,6 @@ func ResolveChannelModelMapping(relayMode int, originModelName, modelMapping str
 		}
 	}
 
-	if isResponsesCompact {
-		result.OriginModelName = ratio_setting.WithCompactModelSuffix(result.UpstreamModelName)
-	}
 	return result, nil
 }
 
