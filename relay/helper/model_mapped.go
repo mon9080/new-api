@@ -5,13 +5,71 @@ import (
 	"fmt"
 	"strings"
 
-	commonjson "github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/relay/common"
+	rootcommon "github.com/QuantumNous/new-api/common"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	hostreasoning "github.com/QuantumNous/new-api/setting/reasoning"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 )
+
+func ModelMappedHelper(c *gin.Context, info *relaycommon.RelayInfo, request dto.Request) error {
+	if info.ChannelMeta == nil {
+		info.ChannelMeta = &relaycommon.ChannelMeta{}
+	}
+
+	// map model name
+	modelMapping := c.GetString("model_mapping")
+	if modelMapping != "" && modelMapping != "{}" {
+		modelMap := make(map[string]string)
+		err := rootcommon.Unmarshal([]byte(modelMapping), &modelMap)
+		if err != nil {
+			return fmt.Errorf("unmarshal_model_mapping_failed")
+		}
+
+		// 支持链式模型重定向，最终使用链尾的模型
+		currentModel := info.OriginModelName
+		visitedModels := map[string]bool{
+			currentModel: true,
+		}
+		for {
+			mappedModel, exists := modelMap[currentModel]
+			baseModel := hostreasoning.BaseModelName(currentModel)
+			if (!exists || mappedModel == "") && baseModel != currentModel {
+				mappedModel, exists = modelMap[baseModel]
+			}
+			if exists && mappedModel != "" {
+				// 模型重定向循环检测，避免无限循环
+				if visitedModels[mappedModel] {
+					if mappedModel == currentModel {
+						if currentModel == info.OriginModelName {
+							info.IsModelMapped = false
+							return nil
+						}
+
+						info.IsModelMapped = true
+						break
+					}
+					return errors.New("model_mapping_contains_cycle")
+				}
+				visitedModels[mappedModel] = true
+				currentModel = mappedModel
+				info.IsModelMapped = true
+			} else {
+				break
+			}
+		}
+		if info.IsModelMapped {
+			info.UpstreamModelName = currentModel
+		}
+	}
+
+	if request != nil {
+		request.SetModelName(info.UpstreamModelName)
+	}
+	return nil
+}
 
 type ChannelModelMappingResult struct {
 	OriginModelName   string
@@ -32,7 +90,7 @@ func ResolveChannelModelMapping(relayMode int, originModelName, modelMapping str
 	}
 	if modelMapping != "" && modelMapping != "{}" {
 		modelMap := make(map[string]string)
-		if err := commonjson.Unmarshal([]byte(modelMapping), &modelMap); err != nil {
+		if err := rootcommon.Unmarshal([]byte(modelMapping), &modelMap); err != nil {
 			return ChannelModelMappingResult{}, fmt.Errorf("unmarshal_model_mapping_failed")
 		}
 
@@ -72,7 +130,7 @@ func ResolveChannelModelMapping(relayMode int, originModelName, modelMapping str
 	return result, nil
 }
 
-func PrepareBillingModelName(c *gin.Context, info *common.RelayInfo) error {
+func PrepareBillingModelName(c *gin.Context, info *relaycommon.RelayInfo) error {
 	if info == nil {
 		return errors.New("relay_info_is_nil")
 	}
@@ -91,29 +149,5 @@ func PrepareBillingModelName(c *gin.Context, info *common.RelayInfo) error {
 	}
 
 	info.BillingModelName = resolved.UpstreamModelName
-	return nil
-}
-
-func ModelMappedHelper(c *gin.Context, info *common.RelayInfo, request dto.Request) error {
-	if info.ChannelMeta == nil {
-		info.ChannelMeta = &common.ChannelMeta{}
-	}
-
-	modelMapping := ""
-	if c != nil {
-		modelMapping = c.GetString("model_mapping")
-	}
-	resolved, err := ResolveChannelModelMapping(info.RelayMode, info.OriginModelName, modelMapping)
-	if err != nil {
-		return err
-	}
-	info.IsModelMapped = resolved.IsModelMapped
-	if resolved.IsModelMapped || info.RelayMode == relayconstant.RelayModeResponsesCompact {
-		info.UpstreamModelName = resolved.UpstreamModelName
-	}
-	info.OriginModelName = resolved.OriginModelName
-	if request != nil {
-		request.SetModelName(info.UpstreamModelName)
-	}
 	return nil
 }
