@@ -133,25 +133,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		if streamResponse.Response != nil {
 			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", streamResponse.Response.CreatedAt))
 		}
-		// 守卫启用：只缓冲有限前缀；超出预算立即释放并按正常路径流式发送。
-		guardBuffering := guardEnabled && !guardReleased
-		currentSent := false
-		if guardBuffering {
-			bufferedEvents = append(bufferedEvents, bufferedStreamEvent{response: streamResponse, data: data})
-			heldBytes += len(data)
-			if len(bufferedEvents) >= guardHoldMaxEvents || heldBytes >= guardHoldMaxBytes {
-				for _, event := range bufferedEvents {
-					if err := helper.ResponseChunkData(c, event.response, event.data); err != nil {
-						sr.Stop(err)
-						return
-					}
-				}
-				bufferedEvents = nil
-				heldBytes = 0
-				guardReleased = true
-				currentSent = true
-			}
-		}
+		// 守卫判定必须在缓冲/发送之前：阈值当次的事件若命中守卫，不能被先发出去。
 		if guardErr == nil {
 			var protocolErrorMessage string
 			var upstreamError *types.NewAPIError
@@ -177,15 +159,35 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			}
 			guardErr = codexResponseGuardError(c, info, resp.StatusCode, protocolErrorMessage, streamResponse.Response, true, upstreamError)
 			if guardErr != nil {
-				// The attempt is already lost: stop scanning now instead of waiting
-				// for the upstream to close a connection it may hold open.
+				// 本次尝试已失败：立即停止扫描并退出回调，
+				// 不 Observe、不发送该事件、也不再缓冲。
 				sr.Stop(guardErr)
+				return
+			}
+		}
+
+		// 守卫启用：只缓冲有限前缀；超出预算立即释放并按正常路径流式发送。
+		guardBuffering := guardEnabled && !guardReleased
+		if guardBuffering {
+			bufferedEvents = append(bufferedEvents, bufferedStreamEvent{response: streamResponse, data: data})
+			heldBytes += len(data)
+			if len(bufferedEvents) >= guardHoldMaxEvents || heldBytes >= guardHoldMaxBytes {
+				// 先清空状态再发送：任何一次写失败都必须让尾部回放失效。
+				pending := bufferedEvents
+				bufferedEvents = nil
+				heldBytes = 0
+				guardReleased = true
+				for _, event := range pending {
+					if err := helper.ResponseChunkData(c, event.response, event.data); err != nil {
+						sr.Stop(err)
+						return
+					}
+				}
 			}
 		}
 		accumulator.Observe(&streamResponse, common.StringToByteSlice(data))
-		// 守卫启用时不即时下发：事件已缓冲，等确认无错误后由函数尾部统一下发，
-		// 避免「重复发送」（上游 ResponseChunkData + 我们的缓冲重放）。
-		if !guardBuffering || currentSent {
+		// 缓冲中的事件留待尾部回放；已释放（含本轮刚释放）的事件即时下发。
+		if !guardBuffering {
 			if err := helper.ResponseChunkData(c, streamResponse, data); err != nil {
 				sr.Stop(err)
 				return
