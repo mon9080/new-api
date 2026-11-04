@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -51,6 +52,23 @@ func isInvalidUpstreamResponseError(err *types.NewAPIError) bool {
 	return false
 }
 
+// isEncryptedContentMismatchError reports the upstream answer when a request
+// replays encrypted reasoning items (Responses API) that were minted by a
+// different upstream resource: "The requested item was created under a
+// different OpenAI resource" / "Encrypted content could not be decrypted".
+//
+// It arrives as a 400, but it is not a client error and it is not permanent:
+// the channel that minted the items can serve the request, so retrying on
+// another channel is worthwhile. Without this, strict session affinity turns
+// the case into an instant, unexplained failure.
+func isEncryptedContentMismatchError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "encrypted content") || strings.Contains(msg, "different openai resource")
+}
+
 // ShouldExcludeFailedChannel reports whether a failed attempt should take this
 // channel out of the running for the remainder of the request.
 //
@@ -66,6 +84,11 @@ func ShouldExcludeFailedChannel(c *gin.Context, err *types.NewAPIError) bool {
 	// at fault.
 	if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
 		return false
+	}
+	if isEncryptedContentMismatchError(err) {
+		// This channel cannot decrypt the session's items; another channel may
+		// be the one that minted them.
+		return true
 	}
 	switch err.GetErrorCode() {
 	case types.ErrorCodeCodexResponseGuard, types.ErrorCodeBadResponseBody:
@@ -101,6 +124,14 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	// decides. Requests carrying encrypted Responses state stay bound, because
 	// that state only the originating upstream can use.
 	invalidUpstream := isInvalidUpstreamResponseError(err) && !RequestCarriesUpstreamBoundState(c)
+	// Encrypted-item mismatch: retry another channel before any affinity or
+	// status-code rule can stop it. The budget still bounds the attempts.
+	if isEncryptedContentMismatchError(err) {
+		if retryTimes > 0 {
+			return PolicyDecision{Action: "retry", Reason: "encrypted_state_mismatch", Source: "system"}
+		}
+		return PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}
+	}
 	if ShouldSkipRetryAfterChannelAffinityFailure(c) && !invalidUpstream {
 		source := RequestPolicy(c).SessionModeSource
 		if source == "" {

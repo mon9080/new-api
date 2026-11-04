@@ -192,6 +192,16 @@ func TestUpstreamAddressesMaskOnlyConfiguredAddresses(t *testing.T) {
 	}
 }
 
+// encryptedMismatch mirrors the upstream 400 for Responses items minted by a
+// different upstream resource.
+func encryptedMismatch() *types.NewAPIError {
+	return types.NewOpenAIError(
+		errors.New("OpenAI Responses bad request: The requested item was created under a different OpenAI resource. Use the same resource that created the item to access it."),
+		types.ErrorCodeInvalidRequest,
+		http.StatusBadRequest,
+	)
+}
+
 func TestDecideRelayRetryReasons(t *testing.T) {
 	upstream := func(status int) *types.NewAPIError {
 		return types.NewOpenAIError(errors.New("upstream"), types.ErrorCodeBadResponseStatusCode, status)
@@ -218,6 +228,16 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 			RequestPolicy(c).SessionModeSource = "global"
 		}, want: PolicyDecision{Action: "stop", Reason: "strict_session", Source: "global"}},
 		{name: "nil error", retries: 1, want: PolicyDecision{Action: "stop", Reason: "request_completed", Source: "system"}},
+		// Encrypted Responses items are bound to the upstream resource that minted
+		// them. The upstream answers 400, but another channel may be the origin,
+		// so this must retry even under a strict session and outside the status
+		// retry ranges. Covered by production logs on agentrouter-L.
+		{name: "encrypted mismatch retries despite strict session", err: encryptedMismatch(), retries: 1, setup: func(c *gin.Context) {
+			c.Set(ginKeyChannelAffinitySkipRetry, true)
+			RequestPolicy(c).SessionModeSource = "global"
+		}, want: PolicyDecision{Action: "retry", Reason: "encrypted_state_mismatch", Source: "system"}},
+		{name: "encrypted mismatch retries outside status rules", err: encryptedMismatch(), retries: 1, want: PolicyDecision{Action: "retry", Reason: "encrypted_state_mismatch", Source: "system"}},
+		{name: "encrypted mismatch respects budget", err: encryptedMismatch(), retries: 0, want: PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -227,6 +247,28 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 			decision := DecideRelayRetry(c, tc.err, tc.retries)
 			assert.Equal(t, tc.want, decision)
 			assert.Equal(t, tc.want.Action == "retry", ShouldRetryRelayError(c, tc.err, tc.retries))
+		})
+	}
+}
+
+// ShouldExcludeFailedChannel must keep caller-side rejections from burning a
+// channel while excluding upstream-attributable failures.
+func TestShouldExcludeFailedChannelClassification(t *testing.T) {
+	cases := []struct {
+		name string
+		err  *types.NewAPIError
+		want bool
+	}{
+		{"encrypted mismatch excludes", encryptedMismatch(), true},
+		{"guard hit excludes", types.NewOpenAIError(errors.New("codex response guard triggered"), types.ErrorCodeCodexResponseGuard, http.StatusBadGateway), true},
+		{"upstream 5xx excludes", types.NewOpenAIError(errors.New("upstream"), types.ErrorCodeBadResponseStatusCode, http.StatusBadGateway), true},
+		{"caller 400 does not exclude", types.NewOpenAIError(errors.New("invalid params"), types.ErrorCodeInvalidRequest, http.StatusBadRequest), false},
+		{"skip-retry quota rejection does not exclude", types.NewErrorWithStatusCode(errors.New("quota"), types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry()), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			assert.Equal(t, tc.want, ShouldExcludeFailedChannel(c, tc.err))
 		})
 	}
 }
