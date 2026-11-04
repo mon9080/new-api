@@ -52,7 +52,13 @@ func TestPrepareBillingModelNameUsesMappedTieredModel(t *testing.T) {
 
 	priceData, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{MaxTokens: 100})
 	require.NoError(t, err)
-	require.Equal(t, 660, priceData.QuotaToPreConsume)
+	// Pre-consume estimates the prompt side only (C=0); completion risk is
+	// covered by InputPreConsumeMultiplier, and settlement later re-runs the
+	// same expression with the real output tokens (service/quota.go). So
+	// p*1 + cr*0.2 + c*3.2 with C=0 is 1000, halved by the default group ratio.
+	// Expecting MaxTokens (100) to be priced here would reserve more than the
+	// estimator is designed to, and disagrees with upstream's implementation.
+	require.Equal(t, 500, priceData.QuotaToPreConsume)
 	require.NotNil(t, info.TieredBillingSnapshot)
 	require.Equal(t, "glm-5", info.TieredBillingSnapshot.ModelName)
 	require.Equal(t, "standard", info.TieredBillingSnapshot.EstimatedTier)
