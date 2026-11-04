@@ -40,6 +40,10 @@ const (
 	FilterTaskPluginEndpoint ChannelFilterKind = "task_plugin_endpoint"
 	FilterTaskPluginIdentity ChannelFilterKind = "task_plugin_identity"
 	FilterResponsesWebSocket ChannelFilterKind = "responses_websocket"
+	// FilterFailedChannel excludes channels that already failed for the current
+	// request. Request-scoped only: cross-request health stays with cooldown /
+	// auto_ban, so one bad response must not disable a channel globally.
+	FilterFailedChannel ChannelFilterKind = "failed_channel"
 )
 
 type ChannelFilter struct {
@@ -51,6 +55,9 @@ type ChannelFilter struct {
 	// TaskPluginRelayOnly excludes endpoint candidates after an ordinary relay
 	// channel wins selection, so retries keep using the same protocol handler.
 	TaskPluginRelayOnly bool
+	// FailedChannelIDs are channels this request already failed on; they must
+	// never be selected again within the same request.
+	FailedChannelIDs []int
 }
 
 type ChannelConstraints struct {

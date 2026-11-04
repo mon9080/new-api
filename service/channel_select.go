@@ -407,6 +407,36 @@ func pinnedChannelUnavailable(pin dto.ChannelPin, statusCode int, messageID stri
 
 // AppendUsedChannel records an attempted channel in the request's channel
 // trail, which the retry log and the consume log's admin_info both read.
+// ExcludeFailedChannelForRequest records a channel that already failed for the
+// current request. Retries then skip it and move on to another eligible channel.
+//
+// Scope is deliberate: this is request-local hard exclusion. Cross-request
+// health (cooldown / auto_ban) is handled elsewhere and must not be inferred
+// from a single bad response, so a guard hit here never disables a channel
+// globally.
+func ExcludeFailedChannelForRequest(c *gin.Context, channelID int) {
+	if c == nil || channelID <= 0 {
+		return
+	}
+	constraints := GetChannelConstraints(c)
+	for i := range constraints.Filters {
+		if constraints.Filters[i].Kind != dto.FilterFailedChannel {
+			continue
+		}
+		for _, id := range constraints.Filters[i].FailedChannelIDs {
+			if id == channelID {
+				return
+			}
+		}
+		constraints.Filters[i].FailedChannelIDs = append(constraints.Filters[i].FailedChannelIDs, channelID)
+		return
+	}
+	constraints.AddFilter(dto.ChannelFilter{
+		Kind:             dto.FilterFailedChannel,
+		FailedChannelIDs: []int{channelID},
+	})
+}
+
 func AppendUsedChannel(c *gin.Context, channelID int) {
 	c.Set("use_channel", append(c.GetStringSlice("use_channel"), fmt.Sprintf("%d", channelID)))
 }

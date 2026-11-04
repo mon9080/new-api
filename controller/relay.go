@@ -174,7 +174,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
+	// totalAttempts is monotonic: getChannel may reset the group cursor
+	// (SetRetry(0)) when switching auto groups, which must not grant a fresh
+	// attempt budget on top of the failures already spent.
+	totalAttempts := 0
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+		if totalAttempts > common.RetryTimes {
+			logger.LogInfo(c, fmt.Sprintf("attempt_budget_exhausted total=%d limit=%d", totalAttempts, common.RetryTimes))
+			break
+		}
+		totalAttempts++
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
 		relayInfo.PerformanceOutputTokens = 0

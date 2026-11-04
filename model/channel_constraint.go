@@ -12,6 +12,9 @@ var filterEvalOrder = []dto.ChannelFilterKind{
 	dto.FilterTaskPluginEndpoint,
 	dto.FilterTaskPluginIdentity,
 	dto.FilterResponsesWebSocket,
+	// Failed-channel exclusion runs last: it is request state, not a routing
+	// capability, and must not mask capability-filter attribution.
+	dto.FilterFailedChannel,
 }
 
 // ChannelSatisfiesFilters reports whether ch passes every filter.
@@ -122,6 +125,8 @@ func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilte
 		// group, priority, weight, affinity, and pin rules. Unrelated type-61
 		// plugins cannot execute this endpoint.
 		return ch.Type != constant.ChannelTypeTaskPlugin || pluginChannel
+	case dto.FilterFailedChannel:
+		return !slices.Contains(filter.FailedChannelIDs, ch.Id)
 	case dto.FilterResponsesWebSocket:
 		if !ch.GetSetting().ResponsesWebSocketEnabled {
 			return false

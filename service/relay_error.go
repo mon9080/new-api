@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -15,11 +16,56 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// RequestCarriesUpstreamBoundState reports whether the request replays state
+// that only the originating upstream can use — Responses API encrypted
+// reasoning items (encrypted_content). Such a request cannot be replayed on a
+// different channel: the upstream rejects it with "item was created under a
+// different resource". Callers must fail fast instead of switching channels.
+func RequestCarriesUpstreamBoundState(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil || storage == nil {
+		return false
+	}
+	body, err := storage.Bytes()
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(body, []byte("encrypted_content"))
+}
+
+// isInvalidUpstreamResponseError reports whether the attempt produced no usable
+// upstream result even though transport-level delivery succeeded: the response
+// guard flagged a fake-success payload, or the stream ended without a valid
+// terminal event. These are channel-attributable failures worth another channel.
+func isInvalidUpstreamResponseError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	switch err.GetErrorCode() {
+	case types.ErrorCodeCodexResponseGuard, types.ErrorCodeBadResponseBody:
+		return true
+	}
+	return false
+}
+
 // DecideRelayRetry is the single retry decision for relay attempts. The reason
 // is recorded in the request policy decision events of the log details.
 func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) PolicyDecision {
 	if err == nil {
 		return PolicyDecision{Action: "stop", Reason: "request_completed", Source: "system"}
+	}
+	// Invalid upstream responses (guard hits / empty terminal payloads) are not
+	// the client's fault, so a strict session binding must not pin the request
+	// to a channel that keeps answering with garbage. Encrypted Responses state
+	// is upstream-bound and cannot be replayed elsewhere, so it still fails.
+	if isInvalidUpstreamResponseError(err) && !RequestCarriesUpstreamBoundState(c) {
+		if retryTimes > 0 {
+			return PolicyDecision{Action: "retry", Reason: "invalid_upstream_response", Source: "system"}
+		}
+		return PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}
 	}
 	if ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		source := RequestPolicy(c).SessionModeSource
