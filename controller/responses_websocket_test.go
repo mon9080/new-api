@@ -40,6 +40,9 @@ var responsesWSTestUserSequence atomic.Int64
 
 func setupResponsesWSRequestTest(t *testing.T) (*model.User, *model.Token) {
 	t.Helper()
+	// getChannel translates the "no channel available" message; without the
+	// bundle go-i18n panics instead of returning the key.
+	require.NoError(t, i18n.Init())
 	previousDB := model.DB
 	previousLogDB := model.LOG_DB
 	previousType := common.MainDatabaseType()
@@ -1023,6 +1026,21 @@ func TestResponsesHTTPHealthCountsFinalResult(t *testing.T) {
 			}))
 			t.Cleanup(upstream.Close)
 			require.NoError(t, model.DB.Model(&model.Channel{}).Where("name = ?", "responses-ws-upstream").Update("base_url", upstream.URL).Error)
+			if tc.success {
+				// Request-scoped exclusion never reuses a failed channel, so the
+				// retry needs a second, lower-priority channel to land on.
+				require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", fixture.channel.Id).Update("priority", 10).Error)
+				secondMapping := `{"ws-billing":"gpt-4o"}`
+				second := &model.Channel{Name: "responses-ws-upstream-b", Key: "upstream-b", Status: common.ChannelStatusEnabled, Type: constant.ChannelTypeOpenAI, Group: "default", Models: "ws-billing", BaseURL: &upstream.URL, ModelMapping: &secondMapping}
+				second.SetSetting(dto.ChannelSettings{ResponsesWebSocketEnabled: true})
+				second.SetOtherSettings(dto.ChannelOtherSettings{AllowServiceTier: true})
+				require.NoError(t, model.DB.Create(second).Error)
+				require.NoError(t, model.DB.Create(&model.Ability{ChannelId: second.Id, Model: "ws-billing", Group: "default", Enabled: true}).Error)
+				t.Cleanup(func() {
+					_ = model.DB.Where("channel_id = ?", second.Id).Delete(&model.Ability{}).Error
+					_ = model.DB.Delete(second).Error
+				})
+			}
 			request, err := http.NewRequest(http.MethodPost, fixture.gatewayURL+"/v1/responses", strings.NewReader(`{"model":"ws-billing","input":"hello"}`))
 			require.NoError(t, err)
 			request.Header.Set("Authorization", "Bearer sk-"+fixture.token.Key)

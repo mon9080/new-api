@@ -110,12 +110,6 @@ func RecordPolicyFailure(c *gin.Context, channelID int, err *types.NewAPIError, 
 	case err.GetErrorType() == types.ErrorTypeNewAPIError:
 		source = "local"
 	}
-	// Request-scoped exclusion: once a channel failed for this request, retries
-	// must not pick it again (the production retry chain kept re-selecting the
-	// same broken channel). Local rejections are not the channel's fault.
-	if source != "local" {
-		ExcludeFailedChannelForRequest(c, channelID)
-	}
 	state := RequestPolicy(c)
 	event := PolicyEvent{ChannelID: channelID, Status: err.StatusCode, ErrorCode: string(err.GetErrorCode()), ErrorSource: source, Decision: PolicyDecision{Action: "failure", Reason: "upstream_failure", Source: source}}
 	if source == "local" {

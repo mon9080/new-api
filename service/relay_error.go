@@ -51,6 +51,43 @@ func isInvalidUpstreamResponseError(err *types.NewAPIError) bool {
 	return false
 }
 
+// ShouldExcludeFailedChannel reports whether a failed attempt should take this
+// channel out of the running for the remainder of the request.
+//
+// It is deliberately not derived from the log-only error source string: caller
+// mistakes and client cancellations must never penalise a channel, and a guard
+// hit reported as a local error must still be excluded. Request-scoped only —
+// cross-request health (cooldown / auto_ban) stays with its own mechanism.
+func ShouldExcludeFailedChannel(c *gin.Context, err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	// The caller is gone; there is nothing left to retry and the channel is not
+	// at fault.
+	if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+		return false
+	}
+	switch err.GetErrorCode() {
+	case types.ErrorCodeCodexResponseGuard, types.ErrorCodeBadResponseBody:
+		// Upstream delivered no usable result for a successful transport.
+		return true
+	case types.ErrorCodeDoRequestFailed:
+		// Transport-level failure attributed to the channel.
+		return true
+	}
+	// Channel-prefixed error codes are channel-attributable by construction.
+	if types.IsChannelError(err) {
+		return true
+	}
+	// Explicitly non-retryable rejects are caller-side decisions (quota, auth,
+	// bad parameters); do not burn the channel for them.
+	if types.IsSkipRetryError(err) {
+		return false
+	}
+	// Remaining server-side failures (5xx) are worth avoiding for this request.
+	return err.StatusCode >= 500
+}
+
 // DecideRelayRetry is the single retry decision for relay attempts. The reason
 // is recorded in the request policy decision events of the log details.
 func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) PolicyDecision {

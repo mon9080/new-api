@@ -252,6 +252,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		relayInfo.LastError = newAPIError
 
 		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
+		// Exclude the channel for the rest of this request before recording the
+		// failure, so the next getChannel cannot pick it again.
+		if service.ShouldExcludeFailedChannel(c, newAPIError) {
+			service.ExcludeFailedChannelForRequest(c, channel.Id)
+		}
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, relayInfo)
 
@@ -628,6 +633,9 @@ func executeTaskSubmissionWith(
 		taskAPIError := taskSubmissionAPIError(taskErr)
 		relayInfo.LastError = taskAPIError
 		decision := decideTaskRetry(c, taskErr, common.RetryTimes-retryParam.GetRetry())
+		if service.ShouldExcludeFailedChannel(c, taskAPIError) {
+			service.ExcludeFailedChannelForRequest(c, channel.Id)
+		}
 		service.RecordPolicyFailure(c, channel.Id, taskAPIError, decision)
 		if !taskErr.LocalError {
 			processChannelError(c,

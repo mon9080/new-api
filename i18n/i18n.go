@@ -63,6 +63,15 @@ func Init() error {
 
 // GetLocalizer returns a localizer for the specified language
 func GetLocalizer(lang string) *i18n.Localizer {
+	// Defensive: Init has not run yet (tests, early startup) means there is no
+	// bundle to build a localizer from. Returning a localizer over a nil bundle
+	// panics inside go-i18n instead of falling back to the message key.
+	mu.RLock()
+	ready := bundle != nil
+	mu.RUnlock()
+	if !ready {
+		return nil
+	}
 	lang = normalizeLang(lang)
 
 	mu.RLock()
@@ -99,6 +108,9 @@ func Translate(lang, key string, args ...map[string]any) string {
 		lang = common.DefaultLanguage
 	}
 	loc := GetLocalizer(lang)
+	if loc == nil {
+		return key // i18n not initialized: fall back to the key, never panic
+	}
 
 	config := &i18n.LocalizeConfig{
 		MessageID: key,
