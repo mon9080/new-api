@@ -94,19 +94,29 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	defer service.CloseResponseBodyGracefully(resp)
 
 	guardEnabled := codexResponseGuardEnabled(info)
-	if guardEnabled {
-		originalDisablePing := info.DisablePing
-		info.DisablePing = true
-		defer func() {
-			info.DisablePing = originalDisablePing
-		}()
-	}
+	// Guard buffering used to disable the scanner ping. With slow upstreams
+	// that left the client with zero bytes for 14+ seconds and it cancelled the
+	// request (production: HTTP 500 "request context canceled" on ch11/ch52).
+	// Keeping the ping alive costs the ability to answer a very late guard hit
+	// with a clean 502, which is the better trade: a held-but-alive stream can
+	// still fail over on the next request, a cancelled one cannot.
 
 	type bufferedStreamEvent struct {
 		response dto.ResponsesStreamResponse
 		data     string
 	}
+	// Bounded prefix hold: the guard may not buffer the whole stream, otherwise
+	// the client receives no bytes until the response completes (production saw
+	// client cancellations at ~15s on slow channels). Once the budget is spent,
+	// the held prefix is flushed and the stream continues normally; a guard hit
+	// after that point can only end the stream, not rewrite the status.
+	const (
+		guardHoldMaxEvents = 64
+		guardHoldMaxBytes  = 64 * 1024
+	)
 	var bufferedEvents []bufferedStreamEvent
+	heldBytes := 0
+	guardReleased := false
 	var guardErr *types.NewAPIError
 
 	accumulator := service.NewResponsesUsageAccumulator(info)
@@ -123,9 +133,24 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		if streamResponse.Response != nil {
 			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", streamResponse.Response.CreatedAt))
 		}
-		// 守卫启用：先缓冲，检测到错误时整段丢弃（见函数尾部的 bufferedEvents 回收）。
-		if guardEnabled {
+		// 守卫启用：只缓冲有限前缀；超出预算立即释放并按正常路径流式发送。
+		guardBuffering := guardEnabled && !guardReleased
+		currentSent := false
+		if guardBuffering {
 			bufferedEvents = append(bufferedEvents, bufferedStreamEvent{response: streamResponse, data: data})
+			heldBytes += len(data)
+			if len(bufferedEvents) >= guardHoldMaxEvents || heldBytes >= guardHoldMaxBytes {
+				for _, event := range bufferedEvents {
+					if err := helper.ResponseChunkData(c, event.response, event.data); err != nil {
+						sr.Stop(err)
+						return
+					}
+				}
+				bufferedEvents = nil
+				heldBytes = 0
+				guardReleased = true
+				currentSent = true
+			}
 		}
 		if guardErr == nil {
 			var protocolErrorMessage string
@@ -151,11 +176,16 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				}
 			}
 			guardErr = codexResponseGuardError(c, info, resp.StatusCode, protocolErrorMessage, streamResponse.Response, true, upstreamError)
+			if guardErr != nil {
+				// The attempt is already lost: stop scanning now instead of waiting
+				// for the upstream to close a connection it may hold open.
+				sr.Stop(guardErr)
+			}
 		}
 		accumulator.Observe(&streamResponse, common.StringToByteSlice(data))
 		// 守卫启用时不即时下发：事件已缓冲，等确认无错误后由函数尾部统一下发，
 		// 避免「重复发送」（上游 ResponseChunkData + 我们的缓冲重放）。
-		if !guardEnabled {
+		if !guardBuffering || currentSent {
 			if err := helper.ResponseChunkData(c, streamResponse, data); err != nil {
 				sr.Stop(err)
 				return
@@ -171,7 +201,12 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		c.Writer.Header().Del("Content-Type")
 		return nil, guardErr
 	}
-	if guardEnabled {
+	if guardEnabled && !guardReleased {
+		// The client may already be gone; replaying then fails and would be
+		// reported as an upstream 500. Classify it as a client cancellation.
+		if c.Request != nil && c.Request.Context().Err() != nil {
+			return nil, types.NewErrorWithStatusCode(c.Request.Context().Err(), types.ErrorCodeDoRequestFailed, 499)
+		}
 		// Replay the buffered prefix through the same sender the live path uses
 		// (upstream removed the old sendResponsesStreamData helper), so write
 		// errors are handled symmetrically instead of being silently dropped.
