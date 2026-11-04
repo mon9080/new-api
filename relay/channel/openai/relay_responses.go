@@ -15,9 +15,8 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -106,10 +105,9 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		if streamResponse.Response != nil {
 			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", streamResponse.Response.CreatedAt))
 		}
+		// 守卫启用：先缓冲，检测到错误时整段丢弃（见函数尾部的 bufferedEvents 回收）。
 		if guardEnabled {
 			bufferedEvents = append(bufferedEvents, bufferedStreamEvent{response: streamResponse, data: data})
-		} else {
-			sendResponsesStreamData(c, streamResponse, data)
 		}
 		if guardErr == nil {
 			var protocolErrorMessage string
@@ -137,6 +135,18 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			guardErr = codexResponseGuardError(c, info, resp.StatusCode, protocolErrorMessage, streamResponse.Response, true, upstreamError)
 		}
 		accumulator.Observe(&streamResponse, common.StringToByteSlice(data))
+		// 守卫启用时不即时下发：事件已缓冲，等确认无错误后由函数尾部统一下发，
+		// 避免「重复发送」（上游 ResponseChunkData + 我们的 sendResponsesStreamData）。
+		if !guardEnabled {
+			if err := helper.ResponseChunkData(c, streamResponse, data); err != nil {
+				sr.Stop(err)
+				return
+			}
+		}
+		if (streamResponse.Type == "response.completed" || streamResponse.Type == "response.done") &&
+			streamResponse.Response != nil && info.StreamStatus.ResponseOutcome() == string(relaycommon.ResponseOutcomeCompleted) {
+			sr.Done()
+		}
 	})
 
 	if guardErr != nil {
@@ -158,10 +168,10 @@ func rewriteSGLangResponsesCreatedAt(info *relaycommon.RelayInfo, payload []byte
 	if info.GetChannelType() != constant.ChannelTypeSGLang {
 		return payload
 	}
-	if !gjson.GetBytes(payload, path).Exists() {
+	if !ojson.GetBytes(payload, path).Exists() {
 		return payload
 	}
-	patched, err := sjson.SetBytes(payload, path, int(createdAt))
+	patched, err := ojson.SetBytes(payload, path, int(createdAt))
 	if err != nil {
 		return payload
 	}
