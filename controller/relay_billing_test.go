@@ -7,8 +7,10 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	"github.com/QuantumNous/new-api/relay/helper"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -45,32 +47,39 @@ func TestRefreshChannelBillingUsesSelectedChannelMapping(t *testing.T) {
 		},
 	}
 
-	priceData, apiErr := refreshChannelPrice(ctx, info, 1000, &types.TokenCountMeta{MaxTokens: 100})
+	// The relay loop now reprices inline via helper.ModelPriceHelper after
+	// channel selection; the old controller helper is gone. Pre-consume covers
+	// the prompt side only (C=0); settlement uses the real output tokens.
+	require.NoError(t, helper.PrepareBillingModelName(ctx, info))
+	priceData, apiErr := helper.ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{MaxTokens: 100})
 	require.Nil(t, apiErr)
-	require.Equal(t, 660, priceData.QuotaToPreConsume)
+	require.Equal(t, 500, priceData.QuotaToPreConsume)
 	require.NotNil(t, info.TieredBillingSnapshot)
 	require.Equal(t, "glm-5", info.TieredBillingSnapshot.ModelName)
 }
 
-func TestEnsureChannelPreConsumeReservesHigherRetryEstimate(t *testing.T) {
+func TestPreConsumeBillingReservesHigherRetryEstimate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	billing := &recordingBillingSettler{preConsumedQuota: 660}
 	info := &relaycommon.RelayInfo{Billing: billing}
 
-	apiErr := ensureChannelPreConsume(ctx, info, 1970)
+	// The controller helper was folded into service.PreConsumeBilling during
+	// the upstream merge; the contract is unchanged: raise the reservation to
+	// the retry estimate before submitting upstream.
+	apiErr := service.PreConsumeBilling(ctx, 1970, info)
 	require.Nil(t, apiErr)
 	require.Equal(t, 1970, billing.reservedQuota)
 }
 
-func TestEnsureChannelPreConsumePreservesReserveAPIError(t *testing.T) {
+func TestPreConsumeBillingPreservesReserveAPIError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	expected := types.NewError(errors.New("quota is insufficient"), types.ErrorCodeInsufficientUserQuota, types.ErrOptionWithStatusCode(http.StatusForbidden), types.ErrOptionWithSkipRetry())
 	billing := &recordingBillingSettler{preConsumedQuota: 660, reserveErr: expected}
 	info := &relaycommon.RelayInfo{Billing: billing}
 
-	apiErr := ensureChannelPreConsume(ctx, info, 1970)
+	apiErr := service.PreConsumeBilling(ctx, 1970, info)
 	require.Same(t, expected, apiErr)
 }
 
@@ -95,6 +104,13 @@ func (s *recordingBillingSettler) GetPreConsumedQuota() int {
 }
 
 func (s *recordingBillingSettler) Reserve(targetQuota int) error {
+	s.reservedQuota = targetQuota
+	return s.reserveErr
+}
+
+// ReserveBeforeSubmit mirrors Reserve; upstream added it to BillingSettler for
+// pre-submit top-ups on task retries.
+func (s *recordingBillingSettler) ReserveBeforeSubmit(targetQuota int) error {
 	s.reservedQuota = targetQuota
 	return s.reserveErr
 }

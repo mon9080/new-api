@@ -58,16 +58,13 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 		return PolicyDecision{Action: "stop", Reason: "request_completed", Source: "system"}
 	}
 	// Invalid upstream responses (guard hits / empty terminal payloads) are not
-	// the client's fault, so a strict session binding must not pin the request
-	// to a channel that keeps answering with garbage. Encrypted Responses state
-	// is upstream-bound and cannot be replayed elsewhere, so it still fails.
-	if isInvalidUpstreamResponseError(err) && !RequestCarriesUpstreamBoundState(c) {
-		if retryTimes > 0 {
-			return PolicyDecision{Action: "retry", Reason: "invalid_upstream_response", Source: "system"}
-		}
-		return PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}
-	}
-	if ShouldSkipRetryAfterChannelAffinityFailure(c) {
+	// the client's fault: a strict session binding must not pin the request to
+	// a channel that keeps answering with garbage. Only the session gate is
+	// bypassed here — the operator's status-code retry configuration still
+	// decides. Requests carrying encrypted Responses state stay bound, because
+	// that state only the originating upstream can use.
+	invalidUpstream := isInvalidUpstreamResponseError(err) && !RequestCarriesUpstreamBoundState(c)
+	if ShouldSkipRetryAfterChannelAffinityFailure(c) && !invalidUpstream {
 		source := RequestPolicy(c).SessionModeSource
 		if source == "" {
 			source = "session_rule"

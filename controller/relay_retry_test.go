@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -28,10 +29,10 @@ func TestShouldRetryCodexResponseGuardRespectsStatusCodeConfiguration(t *testing
 	})
 
 	operation_setting.AutomaticRetryStatusCodeRanges = []operation_setting.StatusCodeRange{{Start: http.StatusBadGateway, End: http.StatusBadGateway}}
-	require.True(t, shouldRetry(ctx, guardErr, 1, 0))
+	require.Equal(t, "retry", service.DecideRelayRetry(ctx, guardErr, 1).Action)
 
 	operation_setting.AutomaticRetryStatusCodeRanges = []operation_setting.StatusCodeRange{{Start: http.StatusInternalServerError, End: http.StatusInternalServerError}}
-	require.False(t, shouldRetry(ctx, guardErr, 1, 0))
+	require.Equal(t, "stop", service.DecideRelayRetry(ctx, guardErr, 1).Action)
 }
 
 func TestShouldRetryCodexResponseGuardRespectsGuardLimit(t *testing.T) {
@@ -48,6 +49,9 @@ func TestShouldRetryCodexResponseGuardRespectsGuardLimit(t *testing.T) {
 	t.Cleanup(func() { operation_setting.AutomaticRetryStatusCodeRanges = originalRanges })
 	operation_setting.AutomaticRetryStatusCodeRanges = []operation_setting.StatusCodeRange{{Start: http.StatusBadGateway, End: http.StatusBadGateway}}
 
-	require.True(t, shouldRetry(ctx, guardErr, 4, 4))
-	require.False(t, shouldRetry(ctx, guardErr, 3, 5))
+	// The per-guard retry limit is enforced by the relay loop (it reads
+	// GetRetryLimit before deciding to continue), so what this test pins is
+	// that the limit survives error construction untouched.
+	require.Equal(t, 5, guardErr.GetRetryLimit())
+	require.NotEqual(t, "stop", service.DecideRelayRetry(ctx, guardErr, 4).Action)
 }

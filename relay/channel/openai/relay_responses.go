@@ -32,8 +32,26 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	if oaiError := responsesResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
+	// Response guard runs for non-streaming responses too: the upstream can
+	// answer HTTP 200 with a terminal failure payload or a fake-success body,
+	// and that must become a retryable channel error before anything is
+	// written to the client. (Restored after the upstream merge dropped it.)
+	var upstreamError *types.NewAPIError
+	protocolErrorMessage := ""
+	if oaiError := responsesResponse.GetOpenAIError(); oaiError != nil {
+		// Give the guard every error object: Codex overload failures carry only
+		//  (server_is_overloaded / slow_down) with an empty , and the
+		// guard maps those to the configured client-visible message.
+		protocolErrorMessage = codexResponseGuardProtocolErrorText(oaiError)
+		if oaiError.Type != "" {
+			upstreamError = types.WithOpenAIError(*oaiError, resp.StatusCode)
+		}
+	}
+	if guardErr := codexResponseGuardError(c, info, resp.StatusCode, protocolErrorMessage, &responsesResponse, false, upstreamError); guardErr != nil {
+		return nil, guardErr
+	}
+	if upstreamError != nil {
+		return nil, upstreamError
 	}
 
 	info.ObserveResponseModel(responsesResponse.Model)
@@ -136,7 +154,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 		accumulator.Observe(&streamResponse, common.StringToByteSlice(data))
 		// 守卫启用时不即时下发：事件已缓冲，等确认无错误后由函数尾部统一下发，
-		// 避免「重复发送」（上游 ResponseChunkData + 我们的 sendResponsesStreamData）。
+		// 避免「重复发送」（上游 ResponseChunkData + 我们的缓冲重放）。
 		if !guardEnabled {
 			if err := helper.ResponseChunkData(c, streamResponse, data); err != nil {
 				sr.Stop(err)
@@ -154,8 +172,13 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		return nil, guardErr
 	}
 	if guardEnabled {
+		// Replay the buffered prefix through the same sender the live path uses
+		// (upstream removed the old sendResponsesStreamData helper), so write
+		// errors are handled symmetrically instead of being silently dropped.
 		for _, event := range bufferedEvents {
-			sendResponsesStreamData(c, event.response, event.data)
+			if err := helper.ResponseChunkData(c, event.response, event.data); err != nil {
+				return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
+			}
 		}
 	}
 
