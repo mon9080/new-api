@@ -144,7 +144,7 @@ func OpenAIChatRequestToClaudeMessages(c context.Context, info convmeta.Meta, te
 			Content: message.Content,
 		}
 		if message.Role == "tool" {
-			fmtMessage.ToolCallId = sharedclaude.NormalizeToolID(message.ToolCallId)
+			fmtMessage.ToolCallId = message.ToolCallId
 		}
 		if message.Role == "assistant" && message.ToolCalls != nil {
 			fmtMessage.ToolCalls = message.ToolCalls
@@ -312,7 +312,7 @@ func OpenAIChatRequestToClaudeMessages(c context.Context, info convmeta.Meta, te
 					}
 					claudeMediaMessages = append(claudeMediaMessages, dto.ClaudeMediaMessage{
 						Type:  "tool_use",
-						Id:    sharedclaude.NormalizeToolID(toolCall.ID),
+						Id:    toolCall.ID,
 						Name:  toolCall.Function.Name,
 						Input: inputObj,
 					})

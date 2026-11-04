@@ -106,14 +106,14 @@ func OpenAIResponsesRequestToClaudeMessages(c context.Context, info convmeta.Met
 			// argument, so its raw input is replayed in that shape.
 			claudeRequest.Messages = appendClaudeToolUse(claudeRequest.Messages, dto.ClaudeMediaMessage{
 				Type:  "tool_use",
-				Id:    sharedclaude.NormalizeToolID(CallID(item)),
+				Id:    CallID(item),
 				Name:  name,
 				Input: map[string]any{convmeta.CustomToolInputArgument: responsesArgumentsString(item["input"])},
 			})
 		case ResponsesInputTypeFunctionCallOutput, ResponsesInputTypeCustomToolOutput:
 			claudeRequest.Messages = appendClaudeToolResult(claudeRequest.Messages, dto.ClaudeMediaMessage{
 				Type:      "tool_result",
-				ToolUseId: sharedclaude.NormalizeToolID(CallID(item)),
+				ToolUseId: CallID(item),
 				Content:   responsesToolOutputToClaude(c, item["output"]),
 			})
 		default:
@@ -233,7 +233,7 @@ func responsesInputContentToClaudeMediaMessages(c context.Context, content any) 
 func responsesFunctionCallItemToClaudeToolUse(item map[string]any) dto.ClaudeMediaMessage {
 	return dto.ClaudeMediaMessage{
 		Type:  "tool_use",
-		Id:    sharedclaude.NormalizeToolID(CallID(item)),
+		Id:    CallID(item),
 		Name:  responsesCallName(item),
 		Input: ObjectValue(item["arguments"], "arguments"),
 	}
