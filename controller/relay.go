@@ -252,9 +252,30 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		relayInfo.LastError = newAPIError
 
 		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
+		// 会话状态归属错误（别家签发的 item id / 解不开的加密推理项）：换渠道重放
+		// 必然失败。先把绑定状态从真正要发送的载荷里剥掉，再重试；没有可剥离的
+		// 内容就维持原决策（通常是终止），不浪费尝试预算。
+		degraded := false
+		// 预算判断用循环的权威计数 totalAttempts，与 SleepBeforeRetry 口径一致。
+		if totalAttempts <= common.RetryTimes &&
+			service.IsUpstreamBoundStateMismatchError(newAPIError) &&
+			!service.BoundStateDegradeAttempted(c) &&
+			!service.RequestPassthrough(relayInfo) {
+			if modified, degradeErr := service.DegradeBoundStateForRetry(c, relayInfo.Request); degradeErr == nil && modified {
+				degraded = true
+				decision = service.PolicyDecision{Action: "retry", Reason: "bound_state_degraded_retry", Source: "system"}
+			}
+		}
 		// Exclude the channel for the rest of this request before recording the
 		// failure, so the next getChannel cannot pick it again.
-		if service.ShouldExcludeFailedChannel(c, newAPIError) {
+		// 降级成功后载荷已无上游绑定状态，4xx 场景下原渠道可以继续用；此时若把它
+		// 排除，单渠道模型会直接变成 “no available channel”，把真实的 400 掩盖成
+		// 503。5xx 属于渠道自身故障，照常排除；降级后仍旧重复同类错误的，也排除，
+		// 避免在同一渠道上把预算烧光。
+		exemptChannel := degraded && newAPIError.StatusCode < 500
+		repeatedBoundState := !degraded && service.BoundStateDegradeAttempted(c) &&
+			service.IsUpstreamBoundStateMismatchError(newAPIError)
+		if repeatedBoundState || (!exemptChannel && service.ShouldExcludeFailedChannel(c, newAPIError)) {
 			service.ExcludeFailedChannelForRequest(c, channel.Id)
 		}
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
@@ -265,6 +286,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		if decision.Action != "retry" {
+			break
+		}
+		// 首包前的 502 流式失败：稍等再试，避免上游抖动时连续空转。
+		// 返回 false 表示客户端已断开或已过截止时间，不再继续。
+		if !service.SleepBeforeRetry(c, newAPIError, totalAttempts, common.RetryTimes+1-totalAttempts) {
 			break
 		}
 	}

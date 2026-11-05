@@ -26,6 +26,11 @@ func RequestCarriesUpstreamBoundState(c *gin.Context) bool {
 	if c == nil || c.Request == nil {
 		return false
 	}
+	// 本次请求的绑定状态已被剥离：后续基于请求体的判定（是否钉死同渠道）
+	// 必须按“已无绑定”处理，否则会把请求锁死在刚失败的渠道上。
+	if BoundStateAlreadyStripped(c) {
+		return false
+	}
 	storage, err := common.GetBodyStorage(c)
 	if err != nil || storage == nil {
 		return false
