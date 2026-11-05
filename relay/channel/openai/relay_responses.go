@@ -111,8 +111,13 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	// the held prefix is flushed and the stream continues normally; a guard hit
 	// after that point can only end the stream, not rewrite the status.
 	const (
-		guardHoldMaxEvents = 64
-		guardHoldMaxBytes  = 64 * 1024
+		// Only the first few events are held: the guard needs them to catch an
+		// immediate capacity/失败 event, while a long hold leaves a slow upstream
+		// silent for 14+ seconds and the client cancels (production 499s on
+		// ch50/51/52). Since the downstream ping already commits the response,
+		// a late guard hit can no longer rewrite the status anyway.
+		guardHoldMaxEvents = 8
+		guardHoldMaxBytes  = 8 * 1024
 	)
 	var bufferedEvents []bufferedStreamEvent
 	heldBytes := 0
