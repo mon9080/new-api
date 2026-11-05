@@ -116,11 +116,20 @@ func CodexResponseGuardRetryTimes(settings dto.ChannelOtherSettings) int {
 	return retryTimes
 }
 
-func MatchCodexResponseGuard(settings dto.ChannelOtherSettings, upstreamStatus int, protocolErrorMessage string, response *dto.OpenAIResponsesResponse) (*CodexResponseGuardMatch, error) {
-	if ShouldBlockCodexResponse(response) {
-		reasoningTokens, _ := CodexResponseGuardReasoningTokens(response)
-		return &CodexResponseGuardMatch{Kind: CodexResponseGuardMatchReasoningTokens, ReasoningTokens: reasoningTokens}, nil
+// ObserveCodexResponse reports (for logs only) whether the usage happens to
+// match the known fake-success token pattern. It never triggers a block.
+func ObserveCodexResponse(response *dto.OpenAIResponsesResponse) (int, bool) {
+	if !ShouldBlockCodexResponse(response) {
+		return 0, false
 	}
+	reasoningTokens, _ := CodexResponseGuardReasoningTokens(response)
+	return reasoningTokens, true
+}
+
+func MatchCodexResponseGuard(settings dto.ChannelOtherSettings, upstreamStatus int, protocolErrorMessage string, response *dto.OpenAIResponsesResponse) (*CodexResponseGuardMatch, error) {
+	// The reasoning-token pattern (516 + 518n) no longer blocks on its own: a
+	// normal answer whose usage happens to hit the sequence would be discarded.
+	// It stays available for observation only (see ObserveCodexResponse).
 	statusMatched, err := MatchCodexResponseGuardStatusCode(settings, upstreamStatus)
 	if err != nil {
 		return nil, err

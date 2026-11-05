@@ -46,16 +46,19 @@ func newOaiResponsesGuardTestContext(t *testing.T, body string, guardEnabled boo
 func TestOaiResponsesHandlerCodexResponseGuard(t *testing.T) {
 	const guardedBody = `{"object":"response","usage":{"input_tokens":2,"output_tokens":516,"total_tokens":518,"output_tokens_details":{"reasoning_tokens":516}}}`
 
-	t.Run("returns retryable error before writing guarded response", func(t *testing.T) {
+	t.Run("passes a response whose usage only matches the token pattern", func(t *testing.T) {
 		c, recorder, resp, info := newOaiResponsesGuardTestContext(t, guardedBody, true)
 
 		usage, err := OaiResponsesHandler(c, info, resp)
 
-		require.Nil(t, usage)
-		require.NotNil(t, err)
-		require.Equal(t, http.StatusBadGateway, err.StatusCode)
-		require.Equal(t, types.ErrorCodeCodexResponseGuard, err.GetErrorCode())
-		require.Empty(t, recorder.Body.String())
+		// The 516+518n sequence is observation-only now: a normal answer passes.
+		// Note: err is a typed nil pointer; require.NoError would box it into a
+		// non-nil error interface, so compare the pointer directly.
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		require.NotNil(t, usage)
+		require.NotEmpty(t, recorder.Body.String())
 	})
 
 	t.Run("passes guarded-shaped response when channel guard is disabled", func(t *testing.T) {
@@ -122,18 +125,18 @@ func TestOaiResponsesStreamHandlerCodexResponseGuard(t *testing.T) {
 		"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"output_tokens\":516,\"total_tokens\":518,\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n" +
 		"data: [DONE]\n"
 
-	t.Run("returns retryable error without writing a partial stream", func(t *testing.T) {
+	t.Run("streams normally when usage only matches the token pattern", func(t *testing.T) {
 		c, recorder, resp, info := newOaiResponsesGuardTestContext(t, guardedStream, true)
 		resp.Header.Set("Content-Type", "text/event-stream")
 		info.IsStream = true
 
 		usage, err := OaiResponsesStreamHandler(c, info, resp)
 
-		require.Nil(t, usage)
-		require.NotNil(t, err)
-		require.Equal(t, http.StatusBadGateway, err.StatusCode)
-		require.Equal(t, types.ErrorCodeCodexResponseGuard, err.GetErrorCode())
-		require.Empty(t, recorder.Body.String())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		require.NotNil(t, usage)
+		require.Contains(t, recorder.Body.String(), "must not reach client")
 	})
 
 	t.Run("replays the complete stream when guard is disabled", func(t *testing.T) {
@@ -149,7 +152,7 @@ func TestOaiResponsesStreamHandlerCodexResponseGuard(t *testing.T) {
 		require.Contains(t, recorder.Body.String(), "must not reach client")
 	})
 
-	t.Run("returns retryable error when usage arrives in a compatible event without a type", func(t *testing.T) {
+	t.Run("passes a usage-only event that matches the token pattern", func(t *testing.T) {
 		stream := "data: {\"response\":{\"usage\":{\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n" +
 			"data: [DONE]\n"
 		c, recorder, resp, info := newOaiResponsesGuardTestContext(t, stream, true)
@@ -158,10 +161,11 @@ func TestOaiResponsesStreamHandlerCodexResponseGuard(t *testing.T) {
 
 		usage, err := OaiResponsesStreamHandler(c, info, resp)
 
-		require.Nil(t, usage)
-		require.NotNil(t, err)
-		require.Equal(t, http.StatusBadGateway, err.StatusCode)
-		require.Empty(t, recorder.Body.String())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		require.NotNil(t, usage)
+		require.NotEmpty(t, recorder.Body.String())
 	})
 
 	t.Run("converts top-level capacity error without leaking buffered stream", func(t *testing.T) {
@@ -178,7 +182,9 @@ func TestOaiResponsesStreamHandlerCodexResponseGuard(t *testing.T) {
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadGateway, err.StatusCode)
 		require.Equal(t, types.ErrorCodeCodexResponseGuard, err.GetErrorCode())
-		require.Empty(t, recorder.Body.String())
+		// response.created was already forwarded: a committed stream is not retried.
+		require.True(t, types.IsSkipRetryError(err))
+		require.Contains(t, recorder.Body.String(), "response.created")
 	})
 
 	t.Run("preserves top-level error when automatic disable keyword matches", func(t *testing.T) {
@@ -253,7 +259,9 @@ func TestOaiResponsesStreamHandlerCodexResponseGuard(t *testing.T) {
 		require.Nil(t, usage)
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadGateway, err.StatusCode)
-		require.Empty(t, recorder.Body.String())
+		// response.created was already forwarded: a committed stream is not retried.
+		require.True(t, types.IsSkipRetryError(err))
+		require.Contains(t, recorder.Body.String(), "response.created")
 	})
 
 	t.Run("maps response failed overload code to the configured client-visible error", func(t *testing.T) {
@@ -270,7 +278,9 @@ func TestOaiResponsesStreamHandlerCodexResponseGuard(t *testing.T) {
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadGateway, err.StatusCode)
 		require.Equal(t, types.ErrorCodeCodexResponseGuard, err.GetErrorCode())
-		require.Empty(t, recorder.Body.String())
+		// response.created was already forwarded: a committed stream is not retried.
+		require.True(t, types.IsSkipRetryError(err))
+		require.Contains(t, recorder.Body.String(), "response.created")
 	})
 
 	t.Run("converts response error without leaking buffered stream", func(t *testing.T) {
@@ -287,7 +297,9 @@ func TestOaiResponsesStreamHandlerCodexResponseGuard(t *testing.T) {
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadGateway, err.StatusCode)
 		require.Equal(t, types.ErrorCodeCodexResponseGuard, err.GetErrorCode())
-		require.Empty(t, recorder.Body.String())
+		// response.created was already forwarded: a committed stream is not retried.
+		require.True(t, types.IsSkipRetryError(err))
+		require.Contains(t, recorder.Body.String(), "response.created")
 	})
 
 	t.Run("does not scan normal model output for configured error text", func(t *testing.T) {

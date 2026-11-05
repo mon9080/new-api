@@ -232,12 +232,14 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 		// them. The upstream answers 400, but another channel may be the origin,
 		// so this must retry even under a strict session and outside the status
 		// retry ranges. Covered by production logs on agentrouter-L.
-		{name: "encrypted mismatch retries despite strict session", err: encryptedMismatch(), retries: 1, setup: func(c *gin.Context) {
+		// Encrypted/signed state is bound to the resource that minted it; once the
+		// upstream says it cannot verify it, another channel is a blind lottery.
+		{name: "encrypted mismatch stops despite strict session", err: encryptedMismatch(), retries: 1, setup: func(c *gin.Context) {
 			c.Set(ginKeyChannelAffinitySkipRetry, true)
 			RequestPolicy(c).SessionModeSource = "global"
-		}, want: PolicyDecision{Action: "retry", Reason: "encrypted_state_mismatch", Source: "system"}},
-		{name: "encrypted mismatch retries outside status rules", err: encryptedMismatch(), retries: 1, want: PolicyDecision{Action: "retry", Reason: "encrypted_state_mismatch", Source: "system"}},
-		{name: "encrypted mismatch respects budget", err: encryptedMismatch(), retries: 0, want: PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}},
+		}, want: PolicyDecision{Action: "stop", Reason: "encrypted_state_mismatch", Source: "system"}},
+		{name: "encrypted mismatch stops outside status rules", err: encryptedMismatch(), retries: 1, want: PolicyDecision{Action: "stop", Reason: "encrypted_state_mismatch", Source: "system"}},
+		{name: "encrypted mismatch stops regardless of budget", err: encryptedMismatch(), retries: 0, want: PolicyDecision{Action: "stop", Reason: "encrypted_state_mismatch", Source: "system"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())

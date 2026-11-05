@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"strings"
 	"time"
 
@@ -31,10 +30,46 @@ func RequestCarriesUpstreamBoundState(c *gin.Context) bool {
 		return false
 	}
 	body, err := storage.Bytes()
-	if err != nil {
+	if err != nil || len(body) == 0 {
 		return false
 	}
-	return bytes.Contains(body, []byte("encrypted_content"))
+	// Inspect the structured payload: a bare `encrypted_content` substring also
+	// appears in `include: ["reasoning.encrypted_content"]`, which carries no
+	// state at all. Only an actual non-empty encrypted item (or a
+	// previous_response_id reference) binds the request to an upstream resource.
+	var payload map[string]any
+	if err := common.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	for _, key := range []string{"previous_response_id", "previous_response"} {
+		if v, ok := payload[key].(string); ok && strings.TrimSpace(v) != "" {
+			return true
+		}
+	}
+	return containsNonEmptyEncryptedItem(payload["input"])
+}
+
+// containsNonEmptyEncryptedItem walks the request input looking for an item that
+// actually carries encrypted reasoning state.
+func containsNonEmptyEncryptedItem(v any) bool {
+	switch typed := v.(type) {
+	case []any:
+		for _, item := range typed {
+			if containsNonEmptyEncryptedItem(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		if s, ok := typed["encrypted_content"].(string); ok && strings.TrimSpace(s) != "" {
+			return true
+		}
+		for _, item := range typed {
+			if containsNonEmptyEncryptedItem(item) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isInvalidUpstreamResponseError reports whether the attempt produced no usable
@@ -66,7 +101,20 @@ func isEncryptedContentMismatchError(err *types.NewAPIError) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "encrypted content") || strings.Contains(msg, "different openai resource")
+	// Prefer the upstream's structured code when it provides one; clients may
+	// already handle it, and we must not rewrite it into a generic error.
+	if strings.Contains(msg, "invalid_encrypted_content") {
+		return true
+	}
+	// Otherwise require an explicit verification/decryption failure, not the bare
+	// words "encrypted content" (which also appear in success-path metadata).
+	if strings.Contains(msg, "could not be verified") ||
+		strings.Contains(msg, "could not be decrypted") ||
+		strings.Contains(msg, "under a different openai resource") ||
+		strings.Contains(msg, "encrypted content could not be") {
+		return true
+	}
+	return false
 }
 
 // ShouldExcludeFailedChannel reports whether a failed attempt should take this
@@ -124,13 +172,13 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	// decides. Requests carrying encrypted Responses state stay bound, because
 	// that state only the originating upstream can use.
 	invalidUpstream := isInvalidUpstreamResponseError(err) && !RequestCarriesUpstreamBoundState(c)
-	// Encrypted-item mismatch: retry another channel before any affinity or
-	// status-code rule can stop it. The budget still bounds the attempts.
+	// Encrypted/signed conversation state is bound to the upstream resource that
+	// minted it. Once the upstream explicitly reports that state cannot be
+	// verified, another channel is a blind lottery: production showed the same
+	// item rejected by three channels in a row (~60s wasted). Stop immediately
+	// and return the real failure instead of an attempt-budget reason.
 	if isEncryptedContentMismatchError(err) {
-		if retryTimes > 0 {
-			return PolicyDecision{Action: "retry", Reason: "encrypted_state_mismatch", Source: "system"}
-		}
-		return PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}
+		return PolicyDecision{Action: "stop", Reason: "encrypted_state_mismatch", Source: "system"}
 	}
 	if ShouldSkipRetryAfterChannelAffinityFailure(c) && !invalidUpstream {
 		source := RequestPolicy(c).SessionModeSource

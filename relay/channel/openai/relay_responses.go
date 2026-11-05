@@ -93,42 +93,21 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 	defer service.CloseResponseBodyGracefully(resp)
 
+	// No prefix buffering: events are forwarded as they arrive, so the client
+	// always sees progress. Buffering left slow upstreams silent for 14+
+	// seconds and the client cancelled (production 499s on ch50/51/52).
+	//
+	// The guard keeps only the value it can deliver safely: a failure detected
+	// *before* anything is written is converted into a channel failover. Once
+	// the stream is committed, retrying would splice two upstream responses
+	// into one client stream, so the failure is reported as non-retryable and
+	// the outer layer writes the SSE error.
 	guardEnabled := codexResponseGuardEnabled(info)
-	// Guard buffering used to disable the scanner ping. With slow upstreams
-	// that left the client with zero bytes for 14+ seconds and it cancelled the
-	// request (production: HTTP 500 "request context canceled" on ch11/ch52).
-	// Keeping the ping alive costs the ability to answer a very late guard hit
-	// with a clean 502, which is the better trade: a held-but-alive stream can
-	// still fail over on the next request, a cancelled one cannot.
-
-	type bufferedStreamEvent struct {
-		response dto.ResponsesStreamResponse
-		data     string
-	}
-	// Bounded prefix hold: the guard may not buffer the whole stream, otherwise
-	// the client receives no bytes until the response completes (production saw
-	// client cancellations at ~15s on slow channels). Once the budget is spent,
-	// the held prefix is flushed and the stream continues normally; a guard hit
-	// after that point can only end the stream, not rewrite the status.
-	const (
-		// Only the first few events are held: the guard needs them to catch an
-		// immediate capacity/失败 event, while a long hold leaves a slow upstream
-		// silent for 14+ seconds and the client cancels (production 499s on
-		// ch50/51/52). Since the downstream ping already commits the response,
-		// a late guard hit can no longer rewrite the status anyway.
-		guardHoldMaxEvents = 8
-		guardHoldMaxBytes  = 8 * 1024
-	)
-	var bufferedEvents []bufferedStreamEvent
-	heldBytes := 0
-	guardReleased := false
 	var guardErr *types.NewAPIError
 
 	accumulator := service.NewResponsesUsageAccumulator(info)
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
-
-		// 检查当前数据是否包含 completed 状态和 usage 信息
 		var streamResponse dto.ResponsesStreamResponse
 		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
 			logger.LogError(c, common.LogText("failed to unmarshal stream response: %s", err.Error()))
@@ -138,8 +117,8 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		if streamResponse.Response != nil {
 			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", streamResponse.Response.CreatedAt))
 		}
-		// 守卫判定必须在缓冲/发送之前：阈值当次的事件若命中守卫，不能被先发出去。
-		if guardErr == nil {
+
+		if guardEnabled && guardErr == nil {
 			var protocolErrorMessage string
 			var upstreamError *types.NewAPIError
 			switch streamResponse.Type {
@@ -162,41 +141,33 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 					}
 				}
 			}
-			guardErr = codexResponseGuardError(c, info, resp.StatusCode, protocolErrorMessage, streamResponse.Response, true, upstreamError)
-			if guardErr != nil {
-				// 本次尝试已失败：立即停止扫描并退出回调，
-				// 不 Observe、不发送该事件、也不再缓冲。
+			if reasoningTokens, observed := helper.ObserveCodexResponse(streamResponse.Response); observed {
+				logger.LogInfo(c, fmt.Sprintf("codex response guard observation: reasoning_tokens=%d (not blocking)", reasoningTokens))
+			}
+			if matched := codexResponseGuardError(c, info, resp.StatusCode, protocolErrorMessage, streamResponse.Response, true, upstreamError); matched != nil {
+				if !c.Writer.Written() {
+					// Nothing reached the client yet: fail over to another channel.
+					guardErr = matched
+					sr.Stop(matched)
+					return
+				}
+				// Committed: keep the failure visible but non-retryable.
+				logger.LogError(c, common.LogText("codex response guard hit after the stream was committed: %s", matched.Error()))
+				guardErr = types.NewErrorWithStatusCode(
+					errors.New(matched.Error()),
+					types.ErrorCodeCodexResponseGuard,
+					http.StatusBadGateway,
+					types.ErrOptionWithSkipRetry(),
+				)
 				sr.Stop(guardErr)
 				return
 			}
 		}
 
-		// 守卫启用：只缓冲有限前缀；超出预算立即释放并按正常路径流式发送。
-		guardBuffering := guardEnabled && !guardReleased
-		if guardBuffering {
-			bufferedEvents = append(bufferedEvents, bufferedStreamEvent{response: streamResponse, data: data})
-			heldBytes += len(data)
-			if len(bufferedEvents) >= guardHoldMaxEvents || heldBytes >= guardHoldMaxBytes {
-				// 先清空状态再发送：任何一次写失败都必须让尾部回放失效。
-				pending := bufferedEvents
-				bufferedEvents = nil
-				heldBytes = 0
-				guardReleased = true
-				for _, event := range pending {
-					if err := helper.ResponseChunkData(c, event.response, event.data); err != nil {
-						sr.Stop(err)
-						return
-					}
-				}
-			}
-		}
 		accumulator.Observe(&streamResponse, common.StringToByteSlice(data))
-		// 缓冲中的事件留待尾部回放；已释放（含本轮刚释放）的事件即时下发。
-		if !guardBuffering {
-			if err := helper.ResponseChunkData(c, streamResponse, data); err != nil {
-				sr.Stop(err)
-				return
-			}
+		if err := helper.ResponseChunkData(c, streamResponse, data); err != nil {
+			sr.Stop(err)
+			return
 		}
 		if (streamResponse.Type == "response.completed" || streamResponse.Type == "response.done") &&
 			streamResponse.Response != nil && info.StreamStatus.ResponseOutcome() == string(relaycommon.ResponseOutcomeCompleted) {
@@ -205,23 +176,10 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	})
 
 	if guardErr != nil {
-		c.Writer.Header().Del("Content-Type")
+		if !c.Writer.Written() {
+			c.Writer.Header().Del("Content-Type")
+		}
 		return nil, guardErr
-	}
-	if guardEnabled && !guardReleased {
-		// The client may already be gone; replaying then fails and would be
-		// reported as an upstream 500. Classify it as a client cancellation.
-		if c.Request != nil && c.Request.Context().Err() != nil {
-			return nil, types.NewErrorWithStatusCode(c.Request.Context().Err(), types.ErrorCodeDoRequestFailed, 499)
-		}
-		// Replay the buffered prefix through the same sender the live path uses
-		// (upstream removed the old sendResponsesStreamData helper), so write
-		// errors are handled symmetrically instead of being silently dropped.
-		for _, event := range bufferedEvents {
-			if err := helper.ResponseChunkData(c, event.response, event.data); err != nil {
-				return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
-			}
-		}
 	}
 
 	common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, info.StreamStatus)
