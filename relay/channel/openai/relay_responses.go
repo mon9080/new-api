@@ -182,7 +182,19 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		return nil, guardErr
 	}
 
+	// Terminal check: a stream that ended without a successful terminal event
+	// must not be reported as success. Production showed `response.failed`
+	// events recorded as successful requests (type=2, no usage) while the client
+	// saw a truncated answer, so no failover or alert ever fired.
 	common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, info.StreamStatus)
+	// Only convert to an error while nothing reached the client: an upstream
+	// response.failed before the first write can still fail over. Once bytes
+	// are out, the relay keeps upstream's contract (return nil so usage settles)
+	// and the failure stays visible through the stream-status log fields.
+	if info.StreamStatus.ResponseFailed() && (c == nil || !c.Writer.Written()) {
+		return nil, types.NewOpenAIError(errors.New("upstream reported a failed response"), types.ErrorCodeBadResponse, http.StatusBadGateway)
+	}
+
 	info.StreamStatus.RequireTerminal()
 	return accumulator.Finish(), nil
 }

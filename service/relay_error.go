@@ -8,6 +8,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -140,6 +141,11 @@ func ShouldExcludeFailedChannel(c *gin.Context, err *types.NewAPIError) bool {
 	}
 	switch err.GetErrorCode() {
 	case types.ErrorCodeCodexResponseGuard, types.ErrorCodeBadResponseBody:
+		// Bound sessions retry on the SAME channel via a pin; excluding the
+		// channel here would make that pin unsatisfiable.
+		if RequestCarriesUpstreamBoundState(c) {
+			return false
+		}
 		// Upstream delivered no usable result for a successful transport.
 		return true
 	case types.ErrorCodeDoRequestFailed:
@@ -172,6 +178,24 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	// decides. Requests carrying encrypted Responses state stay bound, because
 	// that state only the originating upstream can use.
 	invalidUpstream := isInvalidUpstreamResponseError(err) && !RequestCarriesUpstreamBoundState(c)
+	// Encrypted/signed state only the current upstream can use, so switching
+	// channels cannot work — but a capacity failure is transient and the state
+	// stays valid on the SAME channel. Pin it and retry there instead of
+	// failing the request outright.
+	if isInvalidUpstreamResponseError(err) && RequestCarriesUpstreamBoundState(c) {
+		if retryTimes > 0 {
+			if failedChannel := c.GetInt("channel_id"); failedChannel > 0 {
+				GetChannelConstraints(c).AddPin(dto.ChannelPin{
+					ChannelId: failedChannel,
+					Source:    dto.PinSourceOriginTask,
+					Rank:      dto.PinRankOriginTask,
+					RetryMode: dto.PinRetrySameChannel,
+				})
+			}
+			return PolicyDecision{Action: "retry", Reason: "bound_state_same_channel_retry", Source: "system"}
+		}
+		return PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}
+	}
 	// Encrypted/signed conversation state is bound to the upstream resource that
 	// minted it. Once the upstream explicitly reports that state cannot be
 	// verified, another channel is a blind lottery: production showed the same
