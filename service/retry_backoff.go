@@ -86,7 +86,7 @@ func SleepBeforeRetry(c *gin.Context, err *types.NewAPIError, retried, remaining
 		return true
 	}
 	switch err.GetErrorCode() {
-	case types.ErrorCodeBadResponse, types.ErrorCodeBadResponseBody, types.ErrorCodeCodexResponseGuard:
+	case types.ErrorCodeBadResponse, types.ErrorCodeBadResponseBody:
 	default:
 		return true
 	}

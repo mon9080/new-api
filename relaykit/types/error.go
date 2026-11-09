@@ -72,7 +72,6 @@ const (
 	ErrorCodeReadResponseBodyFailed ErrorCode = "read_response_body_failed"
 	ErrorCodeBadResponseStatusCode  ErrorCode = "bad_response_status_code"
 	ErrorCodeBadResponse            ErrorCode = "bad_response"
-	ErrorCodeCodexResponseGuard     ErrorCode = "codex_response_guard"
 	ErrorCodeBadResponseBody        ErrorCode = "bad_response_body"
 	ErrorCodeEmptyResponse          ErrorCode = "empty_response"
 	ErrorCodeAwsInvokeError         ErrorCode = "aws_invoke_error"
@@ -403,18 +402,6 @@ func (e *NewAPIError) GetRetryLimit() int {
 func ErrOptionWithSkipRetry() NewAPIErrorOptions {
 	return func(e *NewAPIError) {
 		e.skipRetry = true
-	}
-}
-
-func ErrOptionWithSkipAutoDisable() NewAPIErrorOptions {
-	return func(e *NewAPIError) {
-		e.skipAutoDisable = true
-	}
-}
-
-func ErrOptionWithRetryLimit(retryLimit int) NewAPIErrorOptions {
-	return func(e *NewAPIError) {
-		e.retryLimit = retryLimit
 	}
 }
 

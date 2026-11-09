@@ -87,7 +87,7 @@ func isInvalidUpstreamResponseError(err *types.NewAPIError) bool {
 		return false
 	}
 	switch err.GetErrorCode() {
-	case types.ErrorCodeCodexResponseGuard, types.ErrorCodeBadResponseBody:
+	case types.ErrorCodeBadResponseBody:
 		return true
 	}
 	return false
@@ -145,7 +145,7 @@ func ShouldExcludeFailedChannel(c *gin.Context, err *types.NewAPIError) bool {
 		return true
 	}
 	switch err.GetErrorCode() {
-	case types.ErrorCodeCodexResponseGuard, types.ErrorCodeBadResponseBody:
+	case types.ErrorCodeBadResponseBody:
 		// Bound sessions retry on the SAME channel via a pin; excluding the
 		// channel here would make that pin unsatisfiable.
 		if RequestCarriesUpstreamBoundState(c) {

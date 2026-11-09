@@ -372,16 +372,6 @@ func TestSleepBeforeRetryGivesUpWhenDeadlineTooClose(t *testing.T) {
 	}
 }
 
-func TestSleepBeforeRetryCoversGuardErrors(t *testing.T) {
-	calls := withTestSleeper(t)
-	if !SleepBeforeRetry(testContext(t), badGatewayErr(types.ErrorCodeCodexResponseGuard), 1, 2) {
-		t.Fatal("guard 502 must continue")
-	}
-	if len(*calls) != 1 {
-		t.Fatalf("guard 502 must sleep once, slept %v", *calls)
-	}
-}
-
 func TestIsUpstreamBoundStateMismatchRejectsInfraPhrases(t *testing.T) {
 	// 这些是 TLS / 鉴权 / 账单类措辞，与会话状态无关；误判会触发破坏性改写。
 	for _, text := range []string{

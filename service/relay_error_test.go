@@ -262,7 +262,6 @@ func TestShouldExcludeFailedChannelClassification(t *testing.T) {
 		want bool
 	}{
 		{"encrypted mismatch excludes", encryptedMismatch(), true},
-		{"guard hit excludes", types.NewOpenAIError(errors.New("codex response guard triggered"), types.ErrorCodeCodexResponseGuard, http.StatusBadGateway), true},
 		{"upstream 5xx excludes", types.NewOpenAIError(errors.New("upstream"), types.ErrorCodeBadResponseStatusCode, http.StatusBadGateway), true},
 		{"caller 400 does not exclude", types.NewOpenAIError(errors.New("invalid params"), types.ErrorCodeInvalidRequest, http.StatusBadRequest), false},
 		{"skip-retry quota rejection does not exclude", types.NewErrorWithStatusCode(errors.New("quota"), types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry()), false},

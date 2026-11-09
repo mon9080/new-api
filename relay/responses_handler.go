@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/logger"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -66,22 +65,6 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 
 		if httpResp.StatusCode != http.StatusOK {
 			newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
-			if helper.CodexResponseGuardEnabled(info) {
-				match, matchErr := helper.MatchCodexResponseGuard(info.ChannelOtherSettings, httpResp.StatusCode, newAPIError.Error(), nil)
-				if matchErr != nil {
-					logger.LogError(c, "invalid codex response guard configuration: "+matchErr.Error())
-				} else if match != nil {
-					// 会话状态归属错误必须保持原始文本，否则重试决策无法识别，
-					// 会被当成“带绑定状态的无效上游响应”钉死在同一渠道重试。
-					if service.IsUpstreamBoundStateMismatchError(newAPIError) {
-						logger.LogInfo(c, "codex response guard skipped: bound-state mismatch returned to retry policy")
-					} else if helper.ShouldDeferCodexResponseGuardToAutoDisable(c, newAPIError) {
-						helper.LogCodexResponseGuardConflict(c, info, match, httpResp.StatusCode)
-					} else {
-						return helper.NewCodexResponseGuardError(c, info, match, httpResp.StatusCode, false)
-					}
-				}
-			}
 			// reset status code 重置状态码
 			service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 			return newAPIError

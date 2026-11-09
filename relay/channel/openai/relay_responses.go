@@ -32,23 +32,11 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	// Response guard runs for non-streaming responses too: the upstream can
-	// answer HTTP 200 with a terminal failure payload or a fake-success body,
-	// and that must become a retryable channel error before anything is
-	// written to the client. (Restored after the upstream merge dropped it.)
 	var upstreamError *types.NewAPIError
-	protocolErrorMessage := ""
 	if oaiError := responsesResponse.GetOpenAIError(); oaiError != nil {
-		// Give the guard every error object: Codex overload failures carry only
-		//  (server_is_overloaded / slow_down) with an empty , and the
-		// guard maps those to the configured client-visible message.
-		protocolErrorMessage = codexResponseGuardProtocolErrorText(oaiError)
 		if oaiError.Type != "" {
 			upstreamError = types.WithOpenAIError(*oaiError, resp.StatusCode)
 		}
-	}
-	if guardErr := codexResponseGuardError(c, info, resp.StatusCode, protocolErrorMessage, &responsesResponse, false, upstreamError); guardErr != nil {
-		return nil, guardErr
 	}
 	if upstreamError != nil {
 		return nil, upstreamError
@@ -102,9 +90,6 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	// the stream is committed, retrying would splice two upstream responses
 	// into one client stream, so the failure is reported as non-retryable and
 	// the outer layer writes the SSE error.
-	guardEnabled := codexResponseGuardEnabled(info)
-	var guardErr *types.NewAPIError
-
 	accumulator := service.NewResponsesUsageAccumulator(info)
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
@@ -118,51 +103,6 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", streamResponse.Response.CreatedAt))
 		}
 
-		if guardEnabled && guardErr == nil {
-			var protocolErrorMessage string
-			var upstreamError *types.NewAPIError
-			switch streamResponse.Type {
-			case "error":
-				if streamError := dto.GetOpenAIError(streamResponse.Error); streamError != nil {
-					protocolErrorMessage = codexResponseGuardProtocolErrorText(streamError)
-					upstreamError = types.WithOpenAIError(*streamError, resp.StatusCode)
-				}
-				if protocolErrorMessage == "" {
-					protocolErrorMessage = streamResponse.Message
-				}
-				if upstreamError == nil && protocolErrorMessage != "" {
-					upstreamError = types.NewOpenAIError(errors.New(protocolErrorMessage), types.ErrorCodeBadResponse, resp.StatusCode)
-				}
-			case "response.failed", "response.error":
-				if streamResponse.Response != nil {
-					if streamError := streamResponse.Response.GetOpenAIError(); streamError != nil {
-						protocolErrorMessage = codexResponseGuardProtocolErrorText(streamError)
-						upstreamError = types.WithOpenAIError(*streamError, resp.StatusCode)
-					}
-				}
-			}
-			if reasoningTokens, observed := helper.ObserveCodexResponse(streamResponse.Response); observed {
-				logger.LogInfo(c, fmt.Sprintf("codex response guard observation: reasoning_tokens=%d (not blocking)", reasoningTokens))
-			}
-			if matched := codexResponseGuardError(c, info, resp.StatusCode, protocolErrorMessage, streamResponse.Response, true, upstreamError); matched != nil {
-				if !c.Writer.Written() {
-					// Nothing reached the client yet: fail over to another channel.
-					guardErr = matched
-					sr.Stop(matched)
-					return
-				}
-				// Committed: keep the failure visible but non-retryable.
-				logger.LogError(c, common.LogText("codex response guard hit after the stream was committed: %s", matched.Error()))
-				guardErr = types.NewErrorWithStatusCode(
-					errors.New(matched.Error()),
-					types.ErrorCodeCodexResponseGuard,
-					http.StatusBadGateway,
-					types.ErrOptionWithSkipRetry(),
-				)
-				sr.Stop(guardErr)
-				return
-			}
-		}
 
 		accumulator.Observe(&streamResponse, common.StringToByteSlice(data))
 		if err := helper.ResponseChunkData(c, streamResponse, data); err != nil {
@@ -175,12 +115,6 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 	})
 
-	if guardErr != nil {
-		if !c.Writer.Written() {
-			c.Writer.Header().Del("Content-Type")
-		}
-		return nil, guardErr
-	}
 
 	// Terminal check: a stream that ended without a successful terminal event
 	// must not be reported as success. Production showed `response.failed`

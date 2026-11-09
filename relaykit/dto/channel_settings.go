@@ -122,10 +122,6 @@ type ChannelOtherSettings struct {
 	AllowSafetyIdentifier                 bool                  `json:"allow_safety_identifier,omitempty"`             // 是否允许 safety_identifier 透传（默认过滤以保护用户隐私）
 	DisableStore                          bool                  `json:"disable_store,omitempty"`                       // 是否禁用 store 透传（默认允许透传，禁用后可能导致 Codex 无法使用）
 	AllowIncludeObfuscation               bool                  `json:"allow_include_obfuscation,omitempty"`           // 是否允许 stream_options.include_obfuscation 透传（默认过滤以避免关闭流混淆保护）
-	CodexResponseGuardEnabled             bool                  `json:"codex_response_guard_enabled,omitempty"`        // 是否对 Responses 响应启用 Codex 守卫
-	CodexResponseGuardStatusCodes         string                `json:"codex_response_guard_status_codes,omitempty"`   // 触发守卫的上游 HTTP 状态码
-	CodexResponseGuardErrorMessages       *string               `json:"codex_response_guard_error_messages,omitempty"` // 触发守卫的协议错误信息；nil 使用默认值，空字符串表示显式清空
-	CodexResponseGuardRetryTimes          int                   `json:"codex_response_guard_retry_times,omitempty"`    // 守卫重试次数，默认 5
 	DisableTaskPollingSleep               bool                  `json:"disable_task_polling_sleep,omitempty"`          // 是否跳过异步任务轮询间隔
 	AwsKeyType                            AwsKeyType            `json:"aws_key_type,omitempty"`
 	AwsApiType                            AwsApiType            `json:"aws_api_type,omitempty"`
