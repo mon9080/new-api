@@ -91,8 +91,6 @@ type NewAPIError struct {
 	Err             error
 	RelayError      any
 	skipRetry       bool
-	skipAutoDisable bool
-	retryLimit      int
 	recordErrorLog  *bool
 	errorType       ErrorType
 	errorCode       ErrorCode
@@ -383,20 +381,6 @@ func IsSkipRetryError(err *NewAPIError) bool {
 	}
 
 	return err.skipRetry
-}
-
-func IsSkipAutoDisableError(err *NewAPIError) bool {
-	if err == nil {
-		return false
-	}
-	return err.skipAutoDisable
-}
-
-func (e *NewAPIError) GetRetryLimit() int {
-	if e == nil {
-		return 0
-	}
-	return e.retryLimit
 }
 
 func ErrOptionWithSkipRetry() NewAPIErrorOptions {

@@ -281,10 +281,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, relayInfo)
 
-		if retryLimit := newAPIError.GetRetryLimit(); retryLimit > 0 && retryParam.GetRetry() >= retryLimit {
-			logger.LogInfo(c, fmt.Sprintf("guard_retry_limit_reached limit=%d completed=%d", retryLimit, retryParam.GetRetry()))
-			break
-		}
 		if decision.Action != "retry" {
 			break
 		}
