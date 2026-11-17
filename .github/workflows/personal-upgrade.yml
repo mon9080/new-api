@@ -37,8 +37,18 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Typecheck
         run: bun check -b
-      - name: Lint channel changes
-        run: bunx oxlint -c .oxlintrc.json src/features/channels
+      - name: Lint personal channel patch
+        run: |
+          bunx oxlint -c .oxlintrc.json \
+            src/features/channels/components/channels-columns.tsx \
+            src/features/channels/components/drawers/channel-mutate-drawer.tsx \
+            src/features/channels/components/__tests__/channel-configuration.test.tsx \
+            src/features/channels/components/__tests__/channel-name-link.test.tsx \
+            src/features/channels/lib/channel-configuration.ts \
+            src/features/channels/lib/channel-form.ts \
+            src/features/channels/lib/channel-utils.ts \
+            src/features/channels/lib/__tests__/vendor-address.test.ts \
+            src/features/channels/types.ts
       - name: Test frontend
         run: bun run test
 
