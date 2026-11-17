@@ -1,0 +1,143 @@
+name: Personal rc.51 candidate
+
+on:
+  push:
+    branches: [agent/upgrade-rc51-20261117]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: personal-rc51-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_COMMIT: c9c6da2786b6a0912215127e78e28fbc6650c85f
+  OFFICIAL_RUNTIME_IMAGE: calciumion/new-api:v1.0.0-rc.51@sha256:ec69ae5062e27510bdc6a737f0dae63f73c73a28ee28dc6fc5a834f1dd8cbc5a
+  CANDIDATE_IMAGE: new-api-personal:rc51-${{ github.sha }}
+
+jobs:
+  frontend:
+    name: Frontend checks and tests
+    if: github.repository == 'mon9080/new-api' && github.ref == 'refs/heads/agent/upgrade-rc51-20261117'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout integration commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.4'
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bun check -b
+      - name: Lint channel changes
+        run: bunx oxlint -c .oxlintrc.json src/features/channels
+      - name: Test frontend
+        run: bun run test
+
+  backend:
+    name: Backend regression tests
+    if: github.repository == 'mon9080/new-api' && github.ref == 'refs/heads/agent/upgrade-rc51-20261117'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOWORK: 'off'
+    steps:
+      - name: Checkout integration commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            relaykit/go.sum
+            tokenkit/go.sum
+      - name: Create frontend embed placeholder for tests
+        run: |
+          mkdir -p web/dist
+          touch web/dist/index.html
+      - name: Test root, relaykit, and tokenkit modules
+        run: make test
+
+  candidate:
+    name: Build and export linux/amd64 candidate
+    needs: [frontend, backend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout integration commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Prepare version and verify upstream ancestry
+        run: |
+          git merge-base --is-ancestor "$UPSTREAM_COMMIT" HEAD
+          version="v1.0.0-rc.51+personal.${GITHUB_SHA:0:12}"
+          printf '%s\n' "$version" > VERSION
+          printf 'NEW_API_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/new-api-candidate"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Build candidate without publishing
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.personal
+          platforms: linux/amd64
+          push: false
+          tags: ${{ env.CANDIDATE_IMAGE }}
+          build-args: |
+            INTEGRATION_COMMIT=${{ github.sha }}
+            NEW_API_VERSION=${{ env.NEW_API_VERSION }}
+            GOPROXY=https://proxy.golang.org,direct
+          outputs: type=docker,dest=${{ runner.temp }}/new-api-candidate/new-api-image.tar
+          cache-from: type=gha,scope=personal-rc51-amd64
+          cache-to: type=gha,mode=max,scope=personal-rc51-amd64
+          provenance: false
+      - name: Extract program and record candidate identity
+        run: |
+          artifact_dir="$RUNNER_TEMP/new-api-candidate"
+          docker load --input "$artifact_dir/new-api-image.tar"
+          container_id=$(docker create "$CANDIDATE_IMAGE")
+          trap 'docker rm "$container_id" >/dev/null' EXIT
+          docker cp "$container_id:/new-api" "$artifact_dir/new-api"
+          docker cp "$container_id:/usr/local/share/new-api-build/." "$artifact_dir/"
+          docker image inspect "$CANDIDATE_IMAGE" > "$artifact_dir/image-inspect.json"
+          image_id=$(docker image inspect --format '{{.Id}}' "$CANDIDATE_IMAGE")
+          binary_sha=$(sha256sum "$artifact_dir/new-api" | cut -d ' ' -f 1)
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg integration_commit "$GITHUB_SHA" \
+            --arg upstream_commit "$UPSTREAM_COMMIT" \
+            --arg official_runtime "$OFFICIAL_RUNTIME_IMAGE" \
+            --arg version "$NEW_API_VERSION" \
+            --arg image_id "$image_id" \
+            --arg binary_sha256 "$binary_sha" \
+            --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{repository: $repository, integration_commit: $integration_commit, upstream_commit: $upstream_commit, official_runtime: $official_runtime, version: $version, platform: "linux/amd64", image_id: $image_id, binary_sha256: $binary_sha256, run_url: $run_url}' \
+            > "$artifact_dir/build-source.json"
+          cd "$artifact_dir"
+          sha256sum --check new-api.sha256
+          sha256sum new-api-image.tar new-api > SHA256SUMS
+          {
+            printf 'Candidate version: `%s`\n\n' "$NEW_API_VERSION"
+            printf 'Integration commit: `%s`\n\n' "$GITHUB_SHA"
+            printf 'Program SHA-256: `%s`\n\n' "$binary_sha"
+            printf 'Exported for review; no registry publication or deployment.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload candidate artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: new-api-rc51-amd64-${{ github.sha }}
+          path: ${{ runner.temp }}/new-api-candidate/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

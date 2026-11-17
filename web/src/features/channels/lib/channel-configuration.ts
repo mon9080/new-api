@@ -89,6 +89,7 @@ const CONFIGURATION_BLOCKS = {
     section: 'other',
     fields: [
       'proxy',
+      'vendor_url',
       'http_protocol',
       'http2_connection_shards',
       'tls_insecure_skip_verify',
@@ -194,6 +195,7 @@ export function getChannelConfigurationState(
     ),
     extraSettings: Boolean(
       values.proxy?.trim() ||
+      values.vendor_url?.trim() ||
       (values.http_protocol && values.http_protocol !== 'auto') ||
       (values.http2_connection_shards ?? 1) > 1 ||
       values.tls_insecure_skip_verify ||

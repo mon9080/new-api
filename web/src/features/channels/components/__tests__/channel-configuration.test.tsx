@@ -1806,6 +1806,42 @@ test('an Ollama channel marks a saved OpenAI-compatible chat setting in Request 
   })
 })
 
+test('editing the vendor address saves it without losing existing channel settings', async () => {
+  editingChannel.setting = JSON.stringify({
+    vendor_url: 'https://saved-vendor.example',
+    custom_option: { enabled: true },
+  })
+  editingChannel.settings = '{"custom_setting":"keep"}'
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  const otherTab = screen.getByRole('tab', { name: /Other Settings/ })
+  expect(otherTab).toHaveAccessibleName(/Configured/)
+  await user.click(otherTab)
+  const address = screen.getByRole('textbox', {
+    name: 'Vendor Address (optional)',
+  })
+  expect(address).toHaveValue('https://saved-vendor.example')
+  await user.clear(address)
+  expect(otherTab).not.toHaveAccessibleName(/Configured/)
+  await user.type(address, 'https://edited-vendor.example/account')
+  expect(otherTab).toHaveAccessibleName(/Configured/)
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  const payload = put.mock.calls[0]?.[1] as {
+    setting: string
+    settings: string
+  }
+  expect(JSON.parse(payload.setting)).toMatchObject({
+    vendor_url: 'https://edited-vendor.example/account',
+    custom_option: { enabled: true },
+  })
+  expect(JSON.parse(payload.settings)).toMatchObject({ custom_setting: 'keep' })
+})
+
 test('a saved upstream TLS verification skip marks Other Settings and turning it off saves the setting without it', async () => {
   editingChannel = {
     ...editingChannel,
@@ -2234,6 +2270,9 @@ test('an operator without sensitive write permission can discover saved models a
   expect(thinking).not.toBeChecked()
   await user.click(screen.getByRole('tab', { name: /Other Settings/ }))
   expect(screen.getByLabelText('Proxy Address')).toBeDisabled()
+  expect(
+    screen.getByRole('textbox', { name: 'Vendor Address (optional)' })
+  ).toBeDisabled()
   await user.click(screen.getByRole('tab', { name: /Routing & Mapping/ }))
   fireEvent.change(screen.getByLabelText('Priority'), {
     target: { value: '8' },

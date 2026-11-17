@@ -1,0 +1,52 @@
+# Official rc.51 runtime, verified for linux/amd64 on 2026-11-17.
+# Upstream commit: c9c6da2786b6a0912215127e78e28fbc6650c85f
+FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS builder
+
+WORKDIR /build/web
+COPY web/package.json web/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY ./web ./
+COPY ./VERSION /build/VERSION
+RUN test -s /build/VERSION \
+    && DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$(cat /build/VERSION) bun run build
+
+FROM golang:1.26.10-alpine@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS builder2
+ENV GO111MODULE=on CGO_ENABLED=0 GOWORK=off
+
+ARG TARGETOS
+ARG TARGETARCH
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} GOPROXY=${GOPROXY}
+ENV GOEXPERIMENT=greenteagc
+
+WORKDIR /build
+ADD go.mod go.sum ./
+ADD relaykit/go.mod ./relaykit/go.mod
+ADD tokenkit/go.mod ./tokenkit/go.mod
+RUN go mod download
+
+COPY . .
+COPY --from=builder /build/web/dist ./web/dist
+RUN test -s VERSION \
+    && go build -pgo="$(go list -m -f '{{.Dir}}' github.com/MoeForge/moejs)/default.pgo" -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=$(cat VERSION)'" -o new-api \
+    && sha256sum new-api > new-api.sha256 \
+    && go version -m new-api > new-api.buildinfo.txt
+
+FROM calciumion/new-api:v1.0.0-rc.51@sha256:ec69ae5062e27510bdc6a737f0dae63f73c73a28ee28dc6fc5a834f1dd8cbc5a
+
+ARG INTEGRATION_COMMIT
+ARG NEW_API_VERSION
+LABEL org.opencontainers.image.source="https://github.com/mon9080/new-api" \
+      org.opencontainers.image.revision="${INTEGRATION_COMMIT}" \
+      org.opencontainers.image.version="${NEW_API_VERSION}" \
+      io.mon9080.new-api.upstream-source="https://github.com/QuantumNous/new-api" \
+      io.mon9080.new-api.upstream-revision="c9c6da2786b6a0912215127e78e28fbc6650c85f" \
+      io.mon9080.new-api.upstream-image="calciumion/new-api:v1.0.0-rc.51@sha256:ec69ae5062e27510bdc6a737f0dae63f73c73a28ee28dc6fc5a834f1dd8cbc5a"
+
+COPY --from=builder2 /build/new-api /new-api
+COPY --from=builder2 /build/new-api.sha256 /build/new-api.buildinfo.txt /usr/local/share/new-api-build/
+COPY --from=builder2 /build/VERSION /usr/local/share/new-api-build/VERSION
+COPY LICENSE NOTICE THIRD-PARTY-LICENSES.md /licenses/
+EXPOSE 3000
+WORKDIR /data
+ENTRYPOINT ["/new-api"]

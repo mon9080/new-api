@@ -337,6 +337,7 @@ const SENSITIVE_FORM_FIELDS = [
   'force_format',
   'thinking_to_content',
   'proxy',
+  'vendor_url',
   'http_protocol',
   'http2_connection_shards',
   'tls_insecure_skip_verify',
@@ -1961,6 +1962,27 @@ export function ChannelMutateDrawer({
           <FormDescription>
             {t(
               'Network proxy for this channel (supports HTTP, HTTPS, SOCKS5, and SOCKS5H)'
+            )}
+          </FormDescription>
+          <FormMessage />
+        </FormItem>
+      )}
+    />
+  )
+
+  const vendorUrlFields = (
+    <FormField
+      control={form.control}
+      name='vendor_url'
+      render={({ field }) => (
+        <FormItem>
+          <FormLabel>{t('Vendor Address (optional)')}</FormLabel>
+          <FormControl>
+            <Input placeholder='https://vendor.example.com' {...field} />
+          </FormControl>
+          <FormDescription>
+            {t(
+              'The vendor this channel resells. The name link in the list opens this address; leave it empty to open the Base URL instead.'
             )}
           </FormDescription>
           <FormMessage />
@@ -5067,6 +5089,7 @@ export function ChannelMutateDrawer({
               >
                 {taskPollingFields}
                 {proxyFields}
+                {vendorUrlFields}
                 {httpProtocolFields}
                 {httpShardsFields}
                 {tlsInsecureSkipVerifyFields}

@@ -125,6 +125,27 @@ export function getChannelTypeIcon(type: number): string {
   return TYPE_TO_ICON[type] || 'OpenAI'
 }
 
+/** Select the vendor address, then the Base URL, when safe to open in a browser. */
+export function getChannelExternalLink(
+  baseUrl?: string | null,
+  vendorUrl?: string | null
+): string | null {
+  for (const candidate of [vendorUrl, baseUrl]) {
+    if (typeof candidate !== 'string') continue
+    const trimmed = candidate.trim()
+    if (!trimmed) continue
+    try {
+      const url = new URL(trimmed)
+      if (url.protocol === 'http:' || url.protocol === 'https:') {
+        return trimmed
+      }
+    } catch {
+      // Invalid vendor addresses fall back to the Base URL.
+    }
+  }
+  return null
+}
+
 // ============================================================================
 // Status Utilities
 // ============================================================================
